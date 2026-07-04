@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "soniox-cli"
+version = "0.1.0"
+description = "CLI bọc Soniox SDK (STT / TTS / Files / Voices) cho agent và người dùng terminal"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "soniox>=2.3.2",
+]
+
+[project.scripts]
+soniox = "soniox_cli.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/soniox_cli"]
