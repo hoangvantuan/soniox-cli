@@ -498,3 +498,94 @@ def test_transcript_co_group_speakers_khong_phai_diarize():
     args = build_parser().parse_args(["stt", "transcript", "i", "--group-speakers"])
     assert args.group_speakers is True
     assert not hasattr(args, "diarize")
+
+
+# --------------------------------------------------------------------------- #
+# soniox update
+# --------------------------------------------------------------------------- #
+def _update_env(monkeypatch, *, latest, source, ran=None):
+    import soniox_cli.cli as cli
+    from soniox_cli import update as U
+
+    monkeypatch.setattr(U, "fetch_latest_version", lambda *a, **k: latest)
+    monkeypatch.setattr(U, "read_source", lambda: source)
+    monkeypatch.setattr(
+        U, "run_upgrade", lambda log: (ran.append(True) if ran is not None else None) or 0
+    )
+    return cli
+
+
+def test_check_khong_cai_gi(monkeypatch, capsys):
+    ran = []
+    cli = _update_env(monkeypatch, latest="9.9.9", source=("uv-git", "https://x"), ran=ran)
+    cli.cmd_update(build_parser().parse_args(["update", "--check"]))
+    assert ran == []
+    assert "chưa cập nhật gì" in capsys.readouterr().out
+
+
+def test_da_moi_nhat_thi_khong_cai_lai(monkeypatch, capsys):
+    from soniox_cli import __version__
+
+    ran = []
+    cli = _update_env(monkeypatch, latest=__version__, source=("uv-git", "https://x"), ran=ran)
+    cli.cmd_update(build_parser().parse_args(["update"]))
+    assert ran == []
+    assert "không có gì để cập nhật" in capsys.readouterr().out
+
+
+def test_co_ban_moi_thi_chay_nang_cap(monkeypatch):
+    ran = []
+    cli = _update_env(monkeypatch, latest="99.0.0", source=("uv-git", "https://x"), ran=ran)
+    cli.cmd_update(build_parser().parse_args(["update"]))
+    assert ran == [True]
+
+
+def test_force_cai_lai_du_da_moi_nhat(monkeypatch):
+    from soniox_cli import __version__
+
+    ran = []
+    cli = _update_env(monkeypatch, latest=__version__, source=("uv-git", "https://x"), ran=ran)
+    cli.cmd_update(build_parser().parse_args(["update", "--force"]))
+    assert ran == [True]
+
+
+def test_no_check_bo_qua_github(monkeypatch):
+    import soniox_cli.cli as cli
+    from soniox_cli import update as U
+
+    ran = []
+    monkeypatch.setattr(U, "read_source", lambda: ("uv-git", "https://x"))
+    monkeypatch.setattr(U, "run_upgrade", lambda log: ran.append(True) or 0)
+    monkeypatch.setattr(
+        U, "fetch_latest_version", lambda *a, **k: pytest.fail("không được hỏi GitHub")
+    )
+    cli.cmd_update(build_parser().parse_args(["update", "--no-check"]))
+    assert ran == [True]
+
+
+def test_check_va_no_check_nguoc_nhau(monkeypatch):
+    import soniox_cli.cli as cli
+
+    with pytest.raises(SystemExit):
+        cli.cmd_update(build_parser().parse_args(["update", "--check", "--no-check"]))
+
+
+@pytest.mark.parametrize("source", [("uv-dir", "/tmp/repo"), ("unknown", None)])
+def test_nguon_khong_tu_nang_cap_duoc_thi_huong_dan_thu_cong(monkeypatch, source):
+    ran = []
+    cli = _update_env(monkeypatch, latest="99.0.0", source=source, ran=ran)
+    with pytest.raises(SystemExit):
+        cli.cmd_update(build_parser().parse_args(["update"]))
+    assert ran == []      # không tự chạy uv khi không chắc
+
+
+def test_nang_cap_that_bai_thi_thoat_khac_0(monkeypatch):
+    import soniox_cli.cli as cli
+    from soniox_cli import update as U
+
+    monkeypatch.setattr(U, "fetch_latest_version", lambda *a, **k: "99.0.0")
+    monkeypatch.setattr(U, "read_source", lambda: ("uv-git", "https://x"))
+    monkeypatch.setattr(U, "run_upgrade", lambda log: 2)
+    with pytest.raises(SystemExit) as e:
+        cli.cmd_update(build_parser().parse_args(["update"]))
+    assert e.value.code == 2

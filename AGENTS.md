@@ -9,6 +9,7 @@ Hướng dẫn cho agent làm việc trên repo này.
 - `src/soniox_cli/cli.py`: toàn bộ lệnh và parser.
 - `src/soniox_cli/subtitles.py`: dựng SRT/VTT từ token. Thuần logic, không chạm mạng, test dày.
 - `src/soniox_cli/media.py`: tách audio khỏi video trước khi upload. Gọi `ffmpeg`/`ffprobe` qua `subprocess`.
+- `src/soniox_cli/update.py`: tự cập nhật. Nhận diện cách cài qua `uv-receipt.toml` rồi ủy quyền cho `uv`.
 
 ## Lệnh
 
@@ -30,6 +31,7 @@ Test cũng **không được để lại file trong temp của hệ thống**. N
 - **`--config-json` lọc key lạ chỉ ở đường đi QUA model pydantic** (STT), bằng `reject_unknown_keys()`: pydantic mặc định `extra="ignore"` nên gõ sai tên trường sẽ bị bỏ im lặng. Payload gửi thẳng API (TTS) thì **không lọc**, vì ở đó API mới là bên phán quyết và lọc theo model SDK sẽ chặn oan trường mới (`speed` không có trong `CreateTtsPayload` của 2.3.2; `reduce_silence` chỉ có từ 2.9.0).
 - **Không âm thầm đoán thay người dùng.** Đuôi file lạ, `--format` lạ, `--speed` ngoài dải: báo lỗi kèm danh sách hợp lệ.
 - **Đừng tin kiểu dữ liệu API trả về.** `cost_usd` về dạng chuỗi, `Voice.models` là danh sách dict chứ không phải chuỗi, token bản dịch có `start_ms = 0`. Ép kiểu và kiểm tra hình dạng trước khi dùng; cả ba đều là bug thật bắt được khi chạy với API thật, không phải suy đoán.
+- **Đừng để CLI tự ghi đè thư mục cài của chính nó.** `update.py` chỉ nhận diện cách cài rồi gọi `uv`; không chắc cài bằng gì thì in hướng dẫn chứ không đoán.
 - **File tạm phải xóa trong `finally`.** `media.prepared_upload` là context manager chính vì thế: bước dọn dẹp là bước hay bị bỏ sót nhất khi có lỗi giữa chừng. Ngoại lệ duy nhất là `--keep-extracted`, và khi đó đường dẫn được in ra.
 - **Dọn dẹp phải nắm được id.** `stt transcribe` tự tạo rồi tự chờ (thay vì dùng `transcribe_and_wait_with_tokens`) để khi timeout hoặc Ctrl-C còn id mà dọn hoặc lấy lại kết quả.
 

@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import __version__, media, subtitles
+from . import __version__, media, subtitles, update
 
 STT_DEFAULT_MODEL = "stt-async-v5"
 TTS_DEFAULT_MODEL = "tts-rt-v1"
@@ -148,6 +148,8 @@ def run(fn, args) -> None:
     except TimeoutError as e:
         die(str(e) or "hết thời gian chờ")
     except media.MediaError as e:
+        die(str(e))
+    except update.UpdateError as e:
         die(str(e))
     except httpx.HTTPError as e:
         die(f"lỗi kết nối tới Soniox: {type(e).__name__}: {e}")
@@ -890,6 +892,49 @@ def _usage_summary(entries: list, start: str, end: str) -> str:
     return "\n".join(lines)
 
 
+def cmd_update(args) -> None:
+    """Báo có bản mới không, và (mặc định) gọi trình quản lý gói cập nhật."""
+    if args.check and args.no_check:
+        die("--check và --no-check ngược nhau, chọn một")
+    kind, detail = update.read_source()
+
+    latest = None
+    if not args.no_check:
+        latest = update.fetch_latest_version()
+        state = (
+            f"có bản mới: {latest}"
+            if update.is_newer(latest, __version__)
+            else "đang là bản mới nhất"
+        )
+        eprint(f"đang dùng {__version__}, trên GitHub là {latest} — {state}")
+    eprint(f"cách cài: {update.describe_source(kind, detail)}")
+
+    if args.check:
+        emit(
+            args,
+            {"current": __version__, "latest": latest, "source": kind, "detail": detail},
+            lambda _d: "(--check nên dừng ở đây, chưa cập nhật gì)",
+        )
+        return
+
+    if latest is not None and not update.is_newer(latest, __version__) and not args.force:
+        emit(
+            args,
+            {"current": __version__, "latest": latest, "updated": False},
+            "không có gì để cập nhật. Dùng --force để cài lại bản hiện tại.",
+        )
+        return
+
+    if kind not in ("uv", "uv-git"):
+        # uv-dir: uv sẽ cài lại từ thư mục local, không kéo được commit mới về.
+        die(update.manual_instructions(kind, detail))
+
+    code = update.run_upgrade(eprint)
+    if code != 0:
+        die(f"lệnh nâng cấp thất bại (mã {code})", code=code)
+    print("đã cập nhật. Kiểm tra: soniox --version")
+
+
 def cmd_auth_check(args) -> None:
     client = get_client()
     resp = client.models.list()
@@ -1119,6 +1164,16 @@ def build_parser() -> argparse.ArgumentParser:
     us.add_argument("--limit", type=int, default=1000)
     _add_json_flag(us)
     us.set_defaults(func=cmd_usage)
+
+    # ---- update ----
+    up_ = sub.add_parser("update", help="cập nhật soniox-cli lên bản mới nhất")
+    up_.add_argument("--check", action="store_true", help="chỉ báo có bản mới không, không cài")
+    up_.add_argument(
+        "--no-check", action="store_true", help="bỏ qua bước hỏi GitHub, cập nhật luôn"
+    )
+    up_.add_argument("--force", action="store_true", help="cài lại kể cả khi đã là bản mới nhất")
+    _add_json_flag(up_)
+    up_.set_defaults(func=cmd_update)
 
     # ---- concurrency ----
     cc = sub.add_parser("concurrency", help="phiên đồng thời đang dùng và giới hạn cấu hình")

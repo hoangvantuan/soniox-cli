@@ -25,6 +25,25 @@ uv tool install .
 
 > Sau khi sửa code: `uv tool install . --reinstall --no-cache` (version không đổi nên `uv` sẽ dùng lại build cache cũ nếu thiếu `--no-cache`).
 
+## Cập nhật
+
+```bash
+soniox update --check    # có bản mới không?
+soniox update            # cập nhật nếu có
+```
+
+`update` không tự sửa file trong thư mục cài: nó đọc `uv-receipt.toml` để biết CLI được cài thế nào, rồi gọi đúng lệnh của trình quản lý gói.
+
+| Cài bằng | `soniox update` làm gì |
+|---|---|
+| `uv tool install git+https://...` | chạy `uv tool upgrade soniox-cli --reinstall` |
+| `uv tool install <thư mục>` | dừng lại, in ra lệnh `git pull` cộng lệnh cài lại cho bạn chạy |
+| cách khác | dừng lại, in ra lệnh cài lại từ GitHub |
+
+`--reinstall` là bắt buộc chứ không thừa: thiếu nó, `uv` so version trong receipt, thấy trùng `0.4.0` thì báo `Nothing to upgrade` và bỏ qua commit mới trên nhánh.
+
+Cờ khác: `--no-check` bỏ qua bước hỏi GitHub, `--force` cài lại kể cả khi đã mới nhất, `--json` để lấy máy đọc.
+
 Gỡ: `uv tool uninstall soniox-cli`
 
 ## Biến môi trường
@@ -46,6 +65,7 @@ Gỡ: `uv tool uninstall soniox-cli`
 | `soniox tts generate "<text>" -o out.wav` | Sinh giọng nói ra file |
 | `soniox voices list\|get\|create\|count\|recompute\|delete` | Voice cloning |
 | `soniox models [--tts]` · `soniox usage` · `soniox concurrency` · `soniox auth check` | Metadata |
+| `soniox update [--check]` | Cập nhật CLI lên bản mới nhất |
 | `soniox --version` · `soniox --help` | Thông tin CLI |
 
 `stt list` và `files list` nhận `--all` để phân trang lấy hết thay vì dừng ở `--limit`.
@@ -153,6 +173,7 @@ Soniox trả token bản dịch **không kèm mốc thời gian**; CLI mượn k
 
 - STT / Files / models / tts-models dùng thẳng `soniox` SDK.
 - **Phụ đề** nằm trong `src/soniox_cli/subtitles.py`, thuần logic và không chạm mạng, nên test được đầy đủ.
+- **Tự cập nhật** nằm trong `src/soniox_cli/update.py`: nhận diện cách cài rồi ủy quyền cho `uv`, không tự ghi đè thư mục cài của chính mình.
 - **Chuẩn bị file upload** nằm trong `src/soniox_cli/media.py`, gọi `ffmpeg`/`ffprobe` qua `subprocess`; test thay `subprocess` nên không cần ffmpeg để chạy.
 - **TTS generate**, **voices** và **usage-logs** gọi raw `client.request()`. Lý do đã kiểm chứng trên chính bản 2.3.2: SDK khi đó chưa có `client.voices`, chưa có `client.usage_logs`, và `CreateTtsPayload` chưa có `speed`. Raw request chạy đúng trên cả dải `>=2.3.2,<3`. Từ 2.8.0 SDK đã có sẵn cả ba; chuyển sang API SDK là việc làm sau, kèm nâng sàn phụ thuộc.
 - Phụ thuộc chặn major (`<3`) vì code bám vào nội bộ SDK (`client.request`, `client.tts_api_base_url`).
