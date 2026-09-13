@@ -4,16 +4,52 @@ build-backend = "hatchling.build"
 
 [project]
 name = "soniox-cli"
-version = "0.1.0"
-description = "CLI bọc Soniox SDK (STT / TTS / Files / Voices) cho agent và người dùng terminal"
+dynamic = ["version"]
+description = "CLI wrapping the Soniox SDK (STT / TTS / Files / Voices) for agents and terminal users"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "soniox>=2.3.2",
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Hoàng Văn Tuấn" }]
+keywords = ["soniox", "speech-to-text", "text-to-speech", "stt", "tts", "cli", "transcription"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Utilities",
 ]
+dependencies = [
+    # Bám vào nội bộ SDK (client.request, client.tts_api_base_url) nên chặn major.
+    "soniox>=2.3.2,<3",
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://github.com/hoangvantuan/soniox-cli"
+Repository = "https://github.com/hoangvantuan/soniox-cli"
+Issues = "https://github.com/hoangvantuan/soniox-cli/issues"
 
 [project.scripts]
 soniox = "soniox_cli.cli:main"
 
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.hatch.version]
+path = "src/soniox_cli/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/soniox_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "skills/", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
