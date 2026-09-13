@@ -1,51 +1,35 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+Cách các skill kỹ thuật đọc tài liệu domain của repo này khi khám phá codebase.
 
-## Before exploring, read these
+## Trước khi khám phá, đọc các file này
 
-- **`CONTEXT.md`** at the repo root, or
-- **`CONTEXT-MAP.md`** at the repo root if it exists: it points at one `CONTEXT.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+- **[`CONTEXT.md`](../../CONTEXT.md)** ở gốc repo: bảng thuật ngữ và ranh giới của CLI.
+- **[`docs/adr/`](../adr/)**: các quyết định kiến trúc đã chốt. Đọc ADR chạm tới vùng bạn sắp sửa.
 
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
+Repo này là **single-context**: một `CONTEXT.md` duy nhất ở gốc, không có `CONTEXT-MAP.md`. Nếu về sau tách nhiều context thì mới thêm `CONTEXT-MAP.md` trỏ tới từng `CONTEXT.md` con.
 
-## File structure
-
-Single-context repo (most repos):
+## Cấu trúc
 
 ```
 /
-├── CONTEXT.md
+├── CONTEXT.md                          ← bảng thuật ngữ, ranh giới
 ├── docs/adr/
-│   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
-└── src/
+│   ├── 0001-khong-boc-realtime-streaming.md
+│   ├── 0002-raw-request-cho-tts-voices-usage.md
+│   ├── 0003-transcribe-mac-dinh-tu-don.md
+│   └── 0004-loc-config-json-bat-doi-xung.md
+└── src/soniox_cli/
 ```
 
-Multi-context repo (presence of `CONTEXT-MAP.md` at the root):
+## Dùng đúng từ vựng trong bảng thuật ngữ
 
-```
-/
-├── CONTEXT-MAP.md
-├── docs/adr/                          ← system-wide decisions
-└── src/
-    ├── ordering/
-    │   ├── CONTEXT.md
-    │   └── docs/adr/                  ← context-specific decisions
-    └── billing/
-        ├── CONTEXT.md
-        └── docs/adr/
-```
+Khi output của bạn gọi tên một khái niệm domain (tiêu đề issue, đề xuất refactor, giả thuyết, tên test), dùng đúng thuật ngữ như `CONTEXT.md` định nghĩa. Đừng trôi sang từ đồng nghĩa mà bảng thuật ngữ đã chủ động tránh: ví dụ phân biệt rõ **delete** (chỉ xóa transcription) với **destroy** (xóa cả file đính kèm), đừng gộp cả hai thành "xóa".
 
-## Use the glossary's vocabulary
+Nếu khái niệm bạn cần chưa có trong bảng thuật ngữ, đó là tín hiệu: hoặc bạn đang bịa ra ngôn ngữ mà dự án không dùng (xem lại), hoặc có khoảng trống thật (ghi lại cho `/domain-modeling`).
 
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
+## Nêu rõ khi mâu thuẫn với ADR
 
-If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
+Nếu output của bạn đi ngược một ADR đang có, nói thẳng ra thay vì lặng lẽ ghi đè:
 
-## Flag ADR conflicts
-
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
-
-> _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+> _Trái với ADR-0002 (raw request cho TTS/voices/usage-logs), nhưng đáng mở lại vì…_
