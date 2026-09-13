@@ -1,17 +1,8 @@
 ---
 name: soniox
 description: >-
-  Speech-to-Text and Text-to-Speech for ANY AUDIO FILE via Soniox, using the
-  `soniox` CLI. Trigger when the task needs: transcription / turning audio into
-  text ("transcribe", "phiên âm", "bóc băng", "audio to text", "make subtitles",
-  "tạo phụ đề", "chuyển ghi âm thành chữ"); speaker separation (diarization);
-  translating audio content into another language; speech synthesis / reading
-  text aloud ("text to speech", "TTS", "đọc thành giọng nói", "tạo file audio
-  từ text"); voice cloning; or when "soniox" is named directly. Accepts a local
-  audio OR video FILE (audio is extracted before upload) and a direct-download
-  audio URL, unlike skills that only fetch a platform's existing captions.
-  CANNOT download from YouTube / Drive / web pages: fetch the file first. NOT
-  for realtime microphone streaming.
+  Speech-to-Text and Text-to-Speech via the `soniox` CLI: transcribe,
+  subtitles, speaker diarization, audio translation, TTS, voice cloning.
 ---
 
 # Soniox CLI
@@ -30,18 +21,18 @@ soniox auth check
 
 ## Command table
 
-| Command | What it does |
-|---|---|
-| `soniox stt transcribe <file\|url>` | Transcribe. By default **waits, prints the text, cleans up** on Soniox |
-| `soniox stt transcribe <x> --no-wait` | Returns the `id` right away (long jobs); poll later |
-| `soniox stt transcribe <x> --subtitles srt\|vtt` | Emit **subtitles** |
-| `soniox stt get\|transcript\|list\|count\|delete\|delete-all` | Manage transcriptions |
-| `soniox stt transcript <id> --group-speakers` | Regroup by speaker (if the transcript has them) |
-| `soniox files upload\|list\|get\|count\|delete\|delete-all` | Uploaded audio files |
-| `soniox tts generate "<text>" -o out.wav` | Text → audio file |
-| `soniox voices list\|get\|create\|count\|recompute\|delete` | Voice cloning |
-| `soniox models [--tts]` · `usage` · `concurrency` · `auth check` | Metadata |
-| `soniox update [--check]` | Update the CLI to the latest version |
+| Command                                                          | What it does                                                           |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `soniox stt transcribe <file\|url>`                              | Transcribe. By default **waits, prints the text, cleans up** on Soniox |
+| `soniox stt transcribe <x> --no-wait`                            | Returns the `id` right away (long jobs); poll later                    |
+| `soniox stt transcribe <x> --subtitles srt\|vtt`                 | Emit **subtitles**                                                     |
+| `soniox stt get\|transcript\|list\|count\|delete\|delete-all`    | Manage transcriptions                                                  |
+| `soniox stt transcript <id> --group-speakers`                    | Regroup by speaker (if the transcript has them)                        |
+| `soniox files upload\|list\|get\|count\|delete\|delete-all`      | Uploaded audio files                                                   |
+| `soniox tts generate "<text>" -o out.wav`                        | Text → audio file                                                      |
+| `soniox voices list\|get\|create\|count\|recompute\|delete`      | Voice cloning                                                          |
+| `soniox models [--tts]` · `usage` · `concurrency` · `auth check` | Metadata                                                               |
+| `soniox update [--check]`                                        | Update the CLI to the latest version                                   |
 
 Add `--json` to any command for the full JSON (token level: timestamp, speaker, confidence, language).
 
