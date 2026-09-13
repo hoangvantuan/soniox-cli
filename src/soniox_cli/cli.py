@@ -11,15 +11,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn
 
+from . import __version__, subtitles
+
 STT_DEFAULT_MODEL = "stt-async-v5"
 TTS_DEFAULT_MODEL = "tts-rt-v1"
 TTS_DEFAULT_VOICE = "Adrian"
-EXAMPLE_AUDIO_URL = "https://soniox.com/media/examples/coffee_shop.mp3"
+TTS_SPEED_MIN, TTS_SPEED_MAX = 0.7, 1.3
+
+# Mọi giá trị TtsAudioFormat Soniox chấp nhận.
+TTS_AUDIO_FORMATS = (
+    "wav", "mp3", "flac", "opus", "aac",
+    "pcm_s16le", "pcm_f32le", "pcm_mulaw", "pcm_alaw",
+)
 
 # Map đuôi file -> TtsAudioFormat hợp lệ của Soniox.
 _SUFFIX_TO_FORMAT = {
@@ -45,14 +54,25 @@ def die(msg: str, code: int = 1) -> NoReturn:
 
 
 def get_client():
-    """Khởi tạo SonioxClient. SDK tự đọc SONIOX_API_KEY từ môi trường."""
-    import os
+    """Khởi tạo SonioxClient từ biến môi trường.
 
+    - `SONIOX_API_KEY` (bắt buộc): API key.
+    - `SONIOX_API_BASE_URL` (tùy chọn): endpoint REST theo vùng (data residency).
+    - `SONIOX_TTS_API_BASE_URL` (tùy chọn): endpoint TTS theo vùng.
+
+    SDK chỉ tự đọc `SONIOX_API_KEY`; hai base URL phải truyền qua constructor
+    nên CLI đọc env rồi chuyển tiếp.
+    """
     if not os.environ.get("SONIOX_API_KEY"):
         die("chưa có SONIOX_API_KEY. Chạy: export SONIOX_API_KEY=<key>")
     from soniox import SonioxClient
 
-    return SonioxClient()
+    kw: dict[str, Any] = {}
+    if base := os.environ.get("SONIOX_API_BASE_URL"):
+        kw["api_base_url"] = base
+    if tts_base := os.environ.get("SONIOX_TTS_API_BASE_URL"):
+        kw["tts_api_base_url"] = tts_base
+    return SonioxClient(**kw)
 
 
 def jsonable(obj: Any) -> Any:
@@ -66,20 +86,46 @@ def jsonable(obj: Any) -> Any:
     return obj
 
 
+def wants_json(args) -> bool:
+    return bool(getattr(args, "json", False))
+
+
 def emit(args, data: Any, human) -> None:
     """In kết quả: --json -> JSON đầy đủ; ngược lại -> dạng người đọc.
 
     `human` là chuỗi, hoặc callable(data)->str.
     """
-    if getattr(args, "json", False):
-        print(json.dumps(jsonable(data), ensure_ascii=False, indent=2, default=str))
+    if wants_json(args):
+        print_json(data)
         return
     text = human(data) if callable(human) else human
     print(text)
 
 
+def write_out(args, text: str) -> None:
+    """In ra stdout, hoặc ghi ra file nếu có -o."""
+    out = getattr(args, "output", None)
+    if not out:
+        print(text)
+        return
+    path = Path(out).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    print(f"đã ghi {len(text)} ký tự -> {path}")
+
+
+def print_json(data: Any) -> None:
+    print(json.dumps(jsonable(data), ensure_ascii=False, indent=2, default=str))
+
+
 def run(fn, args) -> None:
-    """Bọc lời gọi API: dịch các exception Soniox thành lỗi CLI gọn."""
+    """Bọc lời gọi API: dịch mọi lỗi dự kiến thành thông báo CLI gọn.
+
+    `httpx.HTTPError` (DNS, mất mạng, timeout tầng HTTP) không phải lớp con của
+    `SonioxError` lẫn `TimeoutError`, nên phải bắt riêng, nếu không người dùng
+    nhận nguyên traceback.
+    """
+    import httpx
     from soniox.errors import SonioxError
 
     try:
@@ -90,6 +136,10 @@ def run(fn, args) -> None:
         die(f"lỗi Soniox: {e}{suffix}")
     except TimeoutError as e:
         die(str(e) or "hết thời gian chờ")
+    except httpx.HTTPError as e:
+        die(f"lỗi kết nối tới Soniox: {type(e).__name__}: {e}")
+    except KeyboardInterrupt:
+        die("đã hủy", code=130)
 
 
 # --------------------------------------------------------------------------- #
@@ -119,17 +169,41 @@ def build_stt_config(args):
     if getattr(args, "translate", None):
         cfg["translation"] = parse_translate(args.translate)
         cfg["enable_language_identification"] = True
+    from soniox.types import CreateTranscriptionConfig
+
     if getattr(args, "config_json", None):
         extra = _load_config_json(args.config_json)
+        reject_unknown_keys(extra, CreateTranscriptionConfig, "--config-json")
         cfg.update(extra)
     if not cfg:
         return None
-    from soniox.types import CreateTranscriptionConfig
 
     try:
         return CreateTranscriptionConfig(**cfg)
     except Exception as e:  # pydantic ValidationError, ...
         die(f"cấu hình STT không hợp lệ: {e}")
+
+
+def reject_unknown_keys(data: dict, model, where: str) -> None:
+    """Chặn key lạ trước khi nhồi vào một model pydantic.
+
+    Pydantic mặc định `extra="ignore"`: gõ sai tên trường (`language_hint` thiếu
+    chữ s) sẽ bị bỏ im lặng, người dùng tưởng đã bật cấu hình mà thật ra không.
+
+    Chỉ dùng cho đường đi QUA model (STT). Payload gửi thẳng API (TTS) không cần
+    và không nên lọc: ở đó API mới là bên phán quyết, lọc theo model của SDK sẽ
+    chặn oan trường mà API đã hỗ trợ nhưng SDK bản đang cài chưa biết.
+    """
+    known = set(model.model_fields)
+    for field in model.model_fields.values():
+        if field.alias:
+            known.add(field.alias)
+    unknown = sorted(set(data) - known)
+    if unknown:
+        die(
+            f"{where}: trường không tồn tại: {', '.join(unknown)}.\n"
+            f"  trường hợp lệ: {', '.join(sorted(known))}"
+        )
 
 
 def _load_config_json(raw: str) -> dict:
@@ -145,6 +219,8 @@ def _load_config_json(raw: str) -> dict:
 def resolve_audio_input(args) -> dict:
     """Xác định nguồn audio: --file-id, URL, hay file local. Trả kwargs cho SDK."""
     if getattr(args, "file_id", None):
+        if getattr(args, "input", None):
+            die("không dùng đồng thời --file-id và đầu vào file/URL; chọn một")
         return {"file_id": args.file_id}
     value = args.input
     if value is None:
@@ -155,6 +231,15 @@ def resolve_audio_input(args) -> dict:
     if p.is_file():
         return {"file": str(p)}
     die(f"'{value}' không phải URL và cũng không phải file tồn tại")
+
+
+def diarization_on(args, cfg) -> bool:
+    """Diarization có bật không, tính cả khi bật qua --config-json.
+
+    Chỉ nhìn `args.diarize` sẽ bỏ sót người dùng escape hatch: token có `speaker`
+    nhưng output lại in phẳng.
+    """
+    return bool(getattr(args, "diarize", False) or getattr(cfg, "enable_speaker_diarization", False))
 
 
 def format_transcript_text(transcript, diarize: bool) -> str:
@@ -230,14 +315,34 @@ def _format_translation(tokens, with_speaker: bool) -> str:
 # --------------------------------------------------------------------------- #
 # Lệnh STT
 # --------------------------------------------------------------------------- #
+def _try_destroy(client, transcription_id: str, quiet: bool = False) -> None:
+    """Dọn transcription + file đính kèm. Nuốt lỗi: đây là bước dọn, không phải kết quả."""
+    try:
+        client.stt.destroy(transcription_id)
+    except Exception as e:  # noqa: BLE001 - dọn dẹp không được che lấp lỗi gốc
+        if not quiet:
+            eprint(f"cảnh báo: không dọn được transcription {transcription_id}: {e}")
+
+
 def cmd_stt_transcribe(args) -> None:
+    """Tạo transcription rồi (mặc định) chờ xong, in text và dọn khỏi Soniox.
+
+    Tự chờ thay vì dùng `transcribe_and_wait_with_tokens` để luôn nắm được id:
+    khi hết giờ hoặc người dùng Ctrl-C, còn chỗ bám để dọn hoặc lấy lại kết quả,
+    thay vì bỏ mồ côi dữ liệu trên Soniox.
+    """
     client = get_client()
     src = resolve_audio_input(args)
     cfg = build_stt_config(args)
     model = args.model or STT_DEFAULT_MODEL
 
+    if args.no_wait and args.subtitles:
+        die("--subtitles cần transcript nên không dùng chung với --no-wait; "
+            "poll xong rồi chạy: soniox stt transcript <id> --subtitles " + args.subtitles)
+
+    tr = client.stt.transcribe(model=model, config=cfg, **src)
+
     if args.no_wait:
-        tr = client.stt.transcribe(model=model, config=cfg, **src)
         emit(
             args,
             tr,
@@ -247,22 +352,57 @@ def cmd_stt_transcribe(args) -> None:
         return
 
     try:
-        transcript = client.stt.transcribe_and_wait_with_tokens(
-            model=model,
-            config=cfg,
-            delete_after=not args.keep,
-            wait_timeout_sec=args.timeout,
-            **src,
-        )
+        tr = client.stt.wait(tr.id, timeout_sec=args.timeout)
     except TimeoutError:
         die(
-            f"hết thời gian chờ ({args.timeout}s). Dùng --no-wait để lấy id rồi "
-            f"poll bằng 'soniox stt transcript <id>', hoặc tăng --timeout."
+            f"hết thời gian chờ ({args.timeout}s); transcription {tr.id} vẫn đang chạy.\n"
+            f"  lấy kết quả sau: soniox stt transcript {tr.id}\n"
+            f"  hoặc dọn đi:     soniox stt delete {tr.id} --destroy\n"
+            f"  (hoặc tăng --timeout, hoặc dùng --no-wait ngay từ đầu)"
         )
-    if args.json:
-        print(json.dumps(jsonable(transcript), ensure_ascii=False, indent=2, default=str))
-    else:
-        print(format_transcript_text(transcript, args.diarize))
+    except KeyboardInterrupt:
+        if args.keep:
+            eprint(f"đã hủy; transcription {tr.id} vẫn còn trên Soniox.")
+        else:
+            eprint(f"đã hủy; đang dọn transcription {tr.id}...")
+            _try_destroy(client, tr.id)
+        raise
+
+    if tr.status == "error":
+        detail = getattr(tr, "error_message", None) or "không rõ nguyên nhân"
+        if not args.keep:
+            _try_destroy(client, tr.id, quiet=True)
+        die(f"Soniox xử lý thất bại (transcription {tr.id}): {detail}")
+
+    transcript = client.stt.get_transcript(tr.id)
+    if not args.keep:
+        _try_destroy(client, tr.id)
+
+    emit_transcript(args, transcript, diarize=diarization_on(args, cfg))
+
+
+def emit_transcript(args, transcript, *, diarize: bool) -> None:
+    """In transcript theo đúng dạng người dùng yêu cầu: JSON, phụ đề, hay text."""
+    if wants_json(args):
+        print_json(transcript)
+        return
+    fmt = getattr(args, "subtitles", None)
+    if fmt:
+        tokens = getattr(transcript, "tokens", None) or []
+        if not tokens:
+            die("transcript không có token nên không dựng được phụ đề")
+        write_out(
+            args,
+            subtitles.render(
+                tokens,
+                fmt=fmt,
+                track=args.subtitle_track,
+                with_speaker=diarize,
+                max_chars=args.subtitle_max_chars,
+            ),
+        )
+        return
+    write_out(args, format_transcript_text(transcript, diarize))
 
 
 def cmd_stt_get(args) -> None:
@@ -281,8 +421,9 @@ def cmd_stt_get(args) -> None:
 
 def cmd_stt_list(args) -> None:
     client = get_client()
-    resp = client.stt.list(limit=args.limit)
-    rows = resp.transcriptions
+    rows = _rows(client, "stt", args)
+    if rows is None:
+        rows = client.stt.list(limit=args.limit).transcriptions
     emit(
         args,
         rows,
@@ -291,13 +432,47 @@ def cmd_stt_list(args) -> None:
     )
 
 
+def _rows(client, namespace, args):
+    """Lấy danh sách: `--all` thì phân trang hết, không thì một trang `--limit`."""
+    ns = getattr(client, namespace)
+    if getattr(args, "all", False):
+        return list(ns.list_all(limit=args.limit))
+    return None
+
+
+def cmd_stt_count(args) -> None:
+    client = get_client()
+    data = _request_json(client, "GET", "/transcriptions/count")
+    emit(args, data, lambda d: f"tổng: {d.get('total')}  (api: {d.get('public_api')}, playground: {d.get('playground')})")
+
+
+def cmd_stt_delete_all(args) -> None:
+    client = get_client()
+    total = _request_json(client, "GET", "/transcriptions/count").get("total", 0)
+    if not total:
+        emit(args, {"deleted": 0}, "không có transcription nào để xóa")
+        return
+    if not args.yes:
+        kem = " và file đính kèm" if args.destroy else ""
+        die(f"sẽ xóa {total} transcription{kem}. Thêm --yes để xác nhận.")
+    if args.destroy:
+        client.stt.destroy_all(limit=args.limit)
+    else:
+        client.stt.delete_all(limit=args.limit)
+    emit(
+        args,
+        {"deleted": total, "destroy": args.destroy},
+        f"đã xóa {total} transcription" + (" và file đính kèm" if args.destroy else ""),
+    )
+
+
 def cmd_stt_transcript(args) -> None:
     client = get_client()
     t = client.stt.get_transcript(args.id)
-    if args.json:
-        print(json.dumps(jsonable(t), ensure_ascii=False, indent=2, default=str))
-    else:
-        print(t.text)
+    if not wants_json(args) and not args.subtitles:  # noqa: SIM102 - đường nhanh cho text thuần
+        write_out(args, t.text)
+        return
+    emit_transcript(args, t, diarize=args.group_speakers)
 
 
 def cmd_stt_delete(args) -> None:
@@ -329,12 +504,32 @@ def cmd_files_upload(args) -> None:
     )
 
 
+def cmd_files_count(args) -> None:
+    client = get_client()
+    data = _request_json(client, "GET", "/files/count")
+    emit(args, data, lambda d: f"tổng: {d.get('total')}  (api: {d.get('public_api')}, playground: {d.get('playground')})")
+
+
+def cmd_files_delete_all(args) -> None:
+    client = get_client()
+    total = _request_json(client, "GET", "/files/count").get("total", 0)
+    if not total:
+        emit(args, {"deleted": 0}, "không có file nào để xóa")
+        return
+    if not args.yes:
+        die(f"sẽ xóa {total} file đã upload. Thêm --yes để xác nhận.")
+    client.files.delete_all(limit=args.limit)
+    emit(args, {"deleted": total}, f"đã xóa {total} file")
+
+
 def cmd_files_list(args) -> None:
     client = get_client()
-    resp = client.files.list(limit=args.limit)
+    rows = _rows(client, "files", args)
+    if rows is None:
+        rows = client.files.list(limit=args.limit).files
     emit(
         args,
-        resp.files,
+        rows,
         lambda d: "\n".join(f"{f.id}  {f.filename}" for f in d) or "(chưa có file nào)",
     )
 
@@ -365,9 +560,22 @@ def read_tts_text(args) -> str:
 
 
 def fmt_from_output(path: Path, override: str | None) -> str:
+    """Suy định dạng từ đuôi file, hoặc lấy `--format` nếu có.
+
+    Không âm thầm rơi về wav: ghi byte WAV vào file `.ogg` tệ hơn một lỗi rõ ràng.
+    """
     if override:
+        if override not in TTS_AUDIO_FORMATS:
+            die(f"--format '{override}' không hợp lệ. Chọn: {', '.join(TTS_AUDIO_FORMATS)}")
         return override
-    return _SUFFIX_TO_FORMAT.get(path.suffix.lower(), "wav")
+    fmt = _SUFFIX_TO_FORMAT.get(path.suffix.lower())
+    if fmt is None:
+        known = ", ".join(sorted(_SUFFIX_TO_FORMAT))
+        die(
+            f"không suy được định dạng từ đuôi '{path.suffix or path.name}'. "
+            f"Dùng đuôi quen thuộc ({known}) hoặc chỉ định --format."
+        )
+    return fmt
 
 
 def cmd_tts_generate(args) -> None:
@@ -390,8 +598,13 @@ def cmd_tts_generate(args) -> None:
     if args.bitrate:
         payload["bitrate"] = args.bitrate
     if args.speed is not None:
+        if not TTS_SPEED_MIN <= args.speed <= TTS_SPEED_MAX:
+            die(f"--speed phải trong khoảng {TTS_SPEED_MIN} đến {TTS_SPEED_MAX}")
         payload["speed"] = args.speed
     if args.config_json:
+        # Không lọc key ở đây: payload đi thẳng lên API chứ không qua model
+        # pydantic, nên không có gì bị bỏ im lặng. Lọc theo model của SDK sẽ
+        # chặn oan các trường API đã hỗ trợ mà SDK bản đang cài chưa biết.
         payload.update(_load_config_json(args.config_json))
 
     resp = client.request("POST", f"{client.tts_api_base_url}/tts", json=payload)
@@ -462,6 +675,46 @@ def cmd_voices_create(args) -> None:
     )
 
 
+def _voice_models(models) -> str:
+    """`models` là danh sách {model, status, ...}, không phải danh sách chuỗi."""
+    parts = []
+    for m in models or []:
+        if isinstance(m, dict):
+            name = m.get("model") or "?"
+            status = m.get("status")
+            parts.append(f"{name} ({status})" if status else str(name))
+        else:
+            parts.append(str(m))
+    return ", ".join(parts) or "-"
+
+
+def _voice_line(v: dict) -> str:
+    return (
+        f"id: {v.get('id')}\nname: {v.get('name')}\n"
+        f"filename: {v.get('filename')}\ncreated_at: {v.get('created_at')}\n"
+        f"models: {_voice_models(v.get('models'))}"
+    )
+
+
+def cmd_voices_get(args) -> None:
+    client = get_client()
+    emit(args, _request_json(client, "GET", f"/voices/{args.id}"), _voice_line)
+
+
+def cmd_voices_count(args) -> None:
+    client = get_client()
+    data = _request_json(client, "GET", "/voices/count")
+    emit(args, data, lambda d: f"tổng: {d.get('total')}")
+
+
+def cmd_voices_recompute(args) -> None:
+    client = get_client()
+    # Bỏ model thì vẫn phải gửi object rỗng; gửi `null` bị API từ chối 400.
+    body = {"model": args.model} if args.model else {}
+    data = _request_json(client, "POST", f"/voices/{args.id}/recompute", json=body)
+    emit(args, data, _voice_line)
+
+
 def cmd_voices_delete(args) -> None:
     client = get_client()
     _request_json(client, "DELETE", f"/voices/{args.id}")
@@ -471,6 +724,31 @@ def cmd_voices_delete(args) -> None:
 # --------------------------------------------------------------------------- #
 # Lệnh metadata: models / usage / auth
 # --------------------------------------------------------------------------- #
+def _model_line(m) -> str:
+    """Một dòng đủ để chọn model: id, chế độ, số ngôn ngữ, khả năng dịch."""
+    mid = getattr(m, "id", None) or getattr(m, "name", str(m))
+    bits = []
+    mode = getattr(m, "transcription_mode", None)
+    if mode:
+        bits.append(str(mode))
+    langs = getattr(m, "languages", None)
+    if langs:
+        bits.append(f"{len(langs)} ngôn ngữ")
+    trans = [
+        name
+        for name, attr in (("one-way", "one_way_translation"), ("two-way", "two_way_translation"))
+        if getattr(m, attr, None)
+    ]
+    if trans:
+        bits.append("dịch " + "/".join(trans))
+    voices = getattr(m, "voices", None)
+    if voices:
+        bits.append(f"{len(voices)} voice")
+    if getattr(m, "supports_speed_adjustment", False):
+        bits.append("chỉnh tốc độ")
+    return f"{mid:<22} {'  '.join(bits)}".rstrip()
+
+
 def cmd_models(args) -> None:
     client = get_client()
     resp = client.tts_models.list() if args.tts else client.models.list()
@@ -478,8 +756,33 @@ def cmd_models(args) -> None:
     emit(
         args,
         models,
-        lambda d: "\n".join(getattr(m, "id", None) or getattr(m, "name", str(m)) for m in d)
-        or "(không có model)",
+        lambda d: "\n".join(_model_line(m) for m in d) or "(không có model)",
+    )
+
+
+def _limits_block(title: str, d: dict) -> str:
+    """Ghép `current` và `limits` thành từng dòng `đang dùng / giới hạn`."""
+    current = d.get("current") or {}
+    limits = d.get("limits") or {}
+    keys = sorted(set(current) | set(limits))
+    if not keys:
+        return f"{title}: (không có dữ liệu)"
+    lines = [f"{title}:"]
+    for k in keys:
+        cap = limits.get(k)
+        lines.append(f"  {k:<24} {current.get(k, 0)} / {'không giới hạn' if cap is None else cap}")
+    return "\n".join(lines)
+
+
+def cmd_concurrency(args) -> None:
+    client = get_client()
+    data = _request_json(client, "GET", "/concurrency-limits")
+    emit(
+        args,
+        data,
+        lambda d: _limits_block("project", d.get("project") or {})
+        + "\n"
+        + _limits_block("organization", d.get("organization") or {}),
     )
 
 
@@ -495,13 +798,60 @@ def cmd_usage(args) -> None:
         params={"start_time": start, "end_time": end, "limit": args.limit},
     )
     entries = data.get("entries") or data.get("usage_logs") or data.get("logs") or []
-    emit(
-        args,
-        data,
-        lambda d: json.dumps(jsonable(d), ensure_ascii=False, indent=2, default=str)
-        if entries
-        else f"(không có bản ghi usage trong khoảng {start} .. {end})",
-    )
+    emit(args, data, lambda _d: _usage_summary(entries, start, end))
+
+
+def _fmt_duration(ms: float) -> str:
+    seconds = int(round(ms / 1000))
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _num(value: Any) -> float:
+    """Ép về số. API trả `cost_usd` dạng chuỗi ("0.1956645000"), đừng tin kiểu."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _usage_summary(entries: list, start: str, end: str) -> str:
+    """Tổng hợp theo model thay vì đổ nguyên JSON ra màn hình."""
+    if not entries:
+        return f"(không có bản ghi usage trong khoảng {start} .. {end})"
+
+    per_model: dict[str, dict[str, float]] = {}
+    for e in entries:
+        row = per_model.setdefault(
+            e.get("model") or "(không rõ)", {"n": 0, "audio_ms": 0.0, "cost": 0.0}
+        )
+        row["n"] += 1
+        row["audio_ms"] += _num(e.get("input_audio_duration_ms")) + _num(
+            e.get("output_audio_duration_ms")
+        )
+        row["cost"] += _num(e.get("cost_usd"))
+
+    lines = [f"{start} .. {end}", ""]
+    lines.append(f"{'model':<22} {'request':>8} {'audio':>10} {'USD':>10}")
+    for name in sorted(per_model, key=lambda k: -per_model[k]["cost"]):
+        r = per_model[name]
+        lines.append(
+            f"{name:<22} {int(r['n']):>8} {_fmt_duration(r['audio_ms']):>10} {r['cost']:>10.4f}"
+        )
+    total_n = sum(r["n"] for r in per_model.values())
+    total_ms = sum(r["audio_ms"] for r in per_model.values())
+    total_cost = sum(r["cost"] for r in per_model.values())
+    lines.append(f"{'TỔNG':<22} {int(total_n):>8} {_fmt_duration(total_ms):>10} {total_cost:>10.4f}")
+    lines.append("")
+    lines.append("(--json để xem từng bản ghi)")
+    return "\n".join(lines)
 
 
 def cmd_auth_check(args) -> None:
@@ -514,8 +864,35 @@ def cmd_auth_check(args) -> None:
 # --------------------------------------------------------------------------- #
 # Parser
 # --------------------------------------------------------------------------- #
-def _add_json_flag(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--json", action="store_true", help="in JSON đầy đủ thay vì text")
+def _add_json_flag(p: argparse.ArgumentParser, *, top: bool = False) -> None:
+    """Thêm cờ --json.
+
+    Ở cấp subcommand phải dùng SUPPRESS: nếu để default=False, argparse sẽ ghi đè
+    giá trị --json mà người dùng đã đặt trước tên subcommand.
+    """
+    kwargs: dict[str, Any] = {} if top else {"default": argparse.SUPPRESS}
+    p.add_argument("--json", action="store_true", help="in JSON đầy đủ thay vì text", **kwargs)
+
+
+def _add_subtitle_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--subtitles",
+        choices=("srt", "vtt"),
+        help="xuất phụ đề thay vì text thuần",
+    )
+    p.add_argument(
+        "--subtitle-track",
+        choices=subtitles.TRACKS,
+        default="auto",
+        help="luồng dùng cho phụ đề khi có bản dịch (mặc định auto: có dịch thì lấy bản dịch)",
+    )
+    p.add_argument(
+        "--subtitle-max-chars",
+        type=int,
+        default=subtitles.DEFAULT_MAX_CHARS,
+        help=f"số ký tự tối đa mỗi cue (mặc định {subtitles.DEFAULT_MAX_CHARS})",
+    )
+    p.add_argument("-o", "--output", help="ghi ra file thay vì in ra stdout")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -523,7 +900,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="soniox",
         description="CLI Soniox: STT / TTS / Files / Voices (chỉ request-response, không realtime).",
     )
-    _add_json_flag(parser)
+    parser.add_argument("--version", action="version", version=f"soniox-cli {__version__}")
+    _add_json_flag(parser, top=True)
     sub = parser.add_subparsers(dest="group", required=True)
 
     # ---- stt ----
@@ -546,6 +924,7 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--no-wait", action="store_true", help="không chờ; trả về id để poll sau")
     tr.add_argument("--keep", action="store_true", help="không tự xóa transcription/file sau khi xong")
     tr.add_argument("--timeout", type=float, default=600.0, help="giới hạn chờ (giây), mặc định 600")
+    _add_subtitle_flags(tr)
     _add_json_flag(tr)
     tr.set_defaults(func=cmd_stt_transcribe)
 
@@ -555,12 +934,30 @@ def build_parser() -> argparse.ArgumentParser:
     g.set_defaults(func=cmd_stt_get)
 
     ls = stt_sub.add_parser("list", help="liệt kê transcription")
-    ls.add_argument("--limit", type=int, default=100)
+    ls.add_argument("--limit", type=int, default=100, help="số bản ghi mỗi trang")
+    ls.add_argument("--all", action="store_true", help="phân trang lấy hết, không dừng ở --limit")
     _add_json_flag(ls)
     ls.set_defaults(func=cmd_stt_list)
 
-    ts = stt_sub.add_parser("transcript", help="lấy transcript text của một transcription")
+    sc = stt_sub.add_parser("count", help="đếm transcription đang có")
+    _add_json_flag(sc)
+    sc.set_defaults(func=cmd_stt_count)
+
+    sda = stt_sub.add_parser("delete-all", help="xóa TOÀN BỘ transcription (cần --yes)")
+    sda.add_argument("--destroy", action="store_true", help="xóa kèm file đã upload")
+    sda.add_argument("--yes", action="store_true", help="xác nhận thật sự muốn xóa hết")
+    sda.add_argument("--limit", type=int, default=100, help="số bản ghi mỗi trang khi duyệt")
+    _add_json_flag(sda)
+    sda.set_defaults(func=cmd_stt_delete_all)
+
+    ts = stt_sub.add_parser("transcript", help="lấy transcript của một transcription")
     ts.add_argument("id")
+    ts.add_argument(
+        "--group-speakers",
+        action="store_true",
+        help="gộp output theo người nói (chỉ có tác dụng nếu transcript đã có diarization)",
+    )
+    _add_subtitle_flags(ts)
     _add_json_flag(ts)
     ts.set_defaults(func=cmd_stt_transcript)
 
@@ -580,9 +977,20 @@ def build_parser() -> argparse.ArgumentParser:
     up.set_defaults(func=cmd_files_upload)
 
     fls = files_sub.add_parser("list", help="liệt kê file")
-    fls.add_argument("--limit", type=int, default=100)
+    fls.add_argument("--limit", type=int, default=100, help="số bản ghi mỗi trang")
+    fls.add_argument("--all", action="store_true", help="phân trang lấy hết, không dừng ở --limit")
     _add_json_flag(fls)
     fls.set_defaults(func=cmd_files_list)
+
+    fc = files_sub.add_parser("count", help="đếm file đã upload")
+    _add_json_flag(fc)
+    fc.set_defaults(func=cmd_files_count)
+
+    fda = files_sub.add_parser("delete-all", help="xóa TOÀN BỘ file đã upload (cần --yes)")
+    fda.add_argument("--yes", action="store_true", help="xác nhận thật sự muốn xóa hết")
+    fda.add_argument("--limit", type=int, default=100, help="số bản ghi mỗi trang khi duyệt")
+    _add_json_flag(fda)
+    fda.set_defaults(func=cmd_files_delete_all)
 
     fg = files_sub.add_parser("get", help="metadata một file")
     fg.add_argument("id")
@@ -627,6 +1035,21 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json_flag(vc)
     vc.set_defaults(func=cmd_voices_create)
 
+    vg = voices_sub.add_parser("get", help="chi tiết một voice")
+    vg.add_argument("id")
+    _add_json_flag(vg)
+    vg.set_defaults(func=cmd_voices_get)
+
+    vcnt = voices_sub.add_parser("count", help="đếm voice")
+    _add_json_flag(vcnt)
+    vcnt.set_defaults(func=cmd_voices_count)
+
+    vr = voices_sub.add_parser("recompute", help="chuẩn bị voice cho model nó chưa sẵn sàng")
+    vr.add_argument("id")
+    vr.add_argument("--model", help="chỉ chuẩn bị cho một model (mặc định: mọi model còn thiếu)")
+    _add_json_flag(vr)
+    vr.set_defaults(func=cmd_voices_recompute)
+
     vd = voices_sub.add_parser("delete", help="xóa voice")
     vd.add_argument("id")
     _add_json_flag(vd)
@@ -645,6 +1068,11 @@ def build_parser() -> argparse.ArgumentParser:
     us.add_argument("--limit", type=int, default=1000)
     _add_json_flag(us)
     us.set_defaults(func=cmd_usage)
+
+    # ---- concurrency ----
+    cc = sub.add_parser("concurrency", help="phiên đồng thời đang dùng và giới hạn cấu hình")
+    _add_json_flag(cc)
+    cc.set_defaults(func=cmd_concurrency)
 
     # ---- auth ----
     au = sub.add_parser("auth", help="kiểm tra xác thực")

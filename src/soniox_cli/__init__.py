@@ -1,3 +1,6 @@
-"""soniox-cli: CLI bọc Soniox SDK (STT / TTS / Files / Voices)."""
+"""soniox-cli: CLI bọc Soniox SDK (STT / TTS / Files / Voices).
 
-__version__ = "0.1.0"
+`__version__` là nguồn version duy nhất; hatch đọc ngược ra `project.version`.
+"""
+
+__version__ = "0.2.0"
