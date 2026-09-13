@@ -96,11 +96,17 @@ def test_describe_source(kind, detail, phai_chua):
 # --------------------------------------------------------------------------- #
 # Lệnh nâng cấp
 # --------------------------------------------------------------------------- #
-def test_lenh_nang_cap_luon_kem_reinstall():
-    """Thiếu --reinstall thì uv báo 'Nothing to upgrade' và bỏ qua commit mới."""
+def test_lenh_nang_cap_thuong_khong_kem_reinstall():
+    """uv tool upgrade tự giải lại git ref; --reinstall là thừa ở đây."""
     cmd = U.upgrade_command()
-    assert cmd[:4] == ["uv", "tool", "upgrade", "soniox-cli"]
-    assert "--reinstall" in cmd
+    assert cmd == ["uv", "tool", "upgrade", "soniox-cli"]
+
+
+def test_force_thi_them_reinstall():
+    """--force nghĩa là cài lại kể cả khi uv cho rằng đã mới nhất."""
+    assert U.upgrade_command(force=True) == [
+        "uv", "tool", "upgrade", "soniox-cli", "--reinstall"
+    ]
 
 
 def test_nguon_thu_muc_thi_huong_dan_git_pull():
@@ -125,6 +131,19 @@ def test_run_upgrade_tra_ve_ma_thoat(monkeypatch):
         subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 3)
     )
     assert U.run_upgrade(lambda _m: None) == 3
+
+
+def test_run_upgrade_chuyen_tiep_force(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(U.shutil, "which", lambda _: "/usr/bin/uv")
+
+    def run(cmd, **kw):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    U.run_upgrade(lambda _m: None, force=True)
+    assert "--reinstall" in seen["cmd"]
 
 
 # --------------------------------------------------------------------------- #

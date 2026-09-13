@@ -6,9 +6,11 @@
 
 CLI cài bằng `uv tool install`. Người dùng (và agent) cần biết mình có đang chạy bản cũ không, và cập nhật mà không phải nhớ lệnh cài ban đầu.
 
-Kiểm chứng trên máy thật: `uv tool upgrade soniox-cli` với nguồn git báo `Nothing to upgrade` khi số version không đổi, dù nhánh đã có commit mới. Phải có `--reinstall` (kéo theo `--refresh`) mới lấy lại từ git.
+`uv-receipt.toml` trong `sys.prefix` ghi rõ nguồn cài: `git = "..."` hay `directory = "..."`, kèm cả SHA đã cài.
 
-`uv-receipt.toml` trong `sys.prefix` ghi rõ nguồn cài: `git = "..."` hay `directory = "..."`.
+Kiểm chứng trên bản cài thật: `uv tool upgrade soniox-cli` **tự giải lại git ref** và nhảy từ `0.3.0@7763c75` lên `0.4.0@12ec9d7`. Không cần `--reinstall`.
+
+> Ghi chú: bản đầu của ADR này khẳng định ngược lại, rằng `--reinstall` là bắt buộc. Khẳng định đó dựa trên một lần chạy `uv tool upgrade` báo `Nothing to upgrade` trong khi **repo chưa hề có commit mới**: quan sát đúng, diễn giải sai nguyên nhân. Giữ lại ghi chú này vì lỗi nằm ở chỗ kết luận về cơ chế từ một phép thử không có biến thiên.
 
 ## Quyết định
 
@@ -16,7 +18,9 @@ Kiểm chứng trên máy thật: `uv tool upgrade soniox-cli` với nguồn git
 
 1. Đọc `uv-receipt.toml` để biết được cài thế nào.
 2. So version hiện tại với `__version__` trên nhánh `main` của GitHub.
-3. Nguồn git thì chạy `uv tool upgrade soniox-cli --reinstall`. Nguồn khác thì **dừng lại và in hướng dẫn**.
+3. Nguồn git thì chạy `uv tool upgrade soniox-cli`. Nguồn khác thì **dừng lại và in hướng dẫn**.
+
+`--force` thêm `--reinstall`, dành cho khi uv cho rằng đã mới nhất mà vẫn muốn cài lại.
 
 ## Lý do
 

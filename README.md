@@ -36,13 +36,13 @@ soniox update            # cập nhật nếu có
 
 | Cài bằng | `soniox update` làm gì |
 |---|---|
-| `uv tool install git+https://...` | chạy `uv tool upgrade soniox-cli --reinstall` |
+| `uv tool install git+https://...` | chạy `uv tool upgrade soniox-cli` |
 | `uv tool install <thư mục>` | dừng lại, in ra lệnh `git pull` cộng lệnh cài lại cho bạn chạy |
 | cách khác | dừng lại, in ra lệnh cài lại từ GitHub |
 
-`--reinstall` là bắt buộc chứ không thừa: thiếu nó, `uv` so version trong receipt, thấy trùng `0.4.0` thì báo `Nothing to upgrade` và bỏ qua commit mới trên nhánh.
+`uv tool upgrade` tự giải lại git ref và lấy commit mới, không cần `--reinstall`. Kiểm chứng bằng một lần nhảy thật `0.3.0 → 0.4.0`, uv ghi đúng SHA mới vào receipt.
 
-Cờ khác: `--no-check` bỏ qua bước hỏi GitHub, `--force` cài lại kể cả khi đã mới nhất, `--json` để lấy máy đọc.
+Cờ khác: `--no-check` bỏ qua bước hỏi GitHub, `--force` thêm `--reinstall` để cài lại kể cả khi uv cho rằng đã mới nhất, `--json` để lấy máy đọc.
 
 Gỡ: `uv tool uninstall soniox-cli`
 

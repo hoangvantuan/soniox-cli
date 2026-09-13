@@ -87,9 +87,9 @@ soniox update --check    # is there a newer version?
 soniox update            # update if there is
 ```
 
-`update` never overwrites its own install directory. It reads `uv-receipt.toml` to see how the CLI was installed, then calls the package manager's own command: `uv tool upgrade soniox-cli --reinstall` for a git install. Installed some other way, it stops and prints the command to run instead of guessing.
+`update` never overwrites its own install directory. It reads `uv-receipt.toml` to see how the CLI was installed, then calls the package manager's own command: `uv tool upgrade soniox-cli` for a git install. Installed some other way, it stops and prints the command to run instead of guessing.
 
-`--reinstall` is not redundant: without it `uv` compares the recorded version, sees no change, reports `Nothing to upgrade`, and skips new commits on the branch.
+`--force` adds `--reinstall`, for when `uv` believes the tool is already current and reports `Nothing to upgrade`.
 
 ## Common examples
 

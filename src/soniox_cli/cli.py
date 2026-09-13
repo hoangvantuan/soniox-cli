@@ -929,7 +929,7 @@ def cmd_update(args) -> None:
         # uv-dir: uv sẽ cài lại từ thư mục local, không kéo được commit mới về.
         die(update.manual_instructions(kind, detail))
 
-    code = update.run_upgrade(eprint)
+    code = update.run_upgrade(eprint, force=args.force)
     if code != 0:
         die(f"lệnh nâng cấp thất bại (mã {code})", code=code)
     print("đã cập nhật. Kiểm tra: soniox --version")

@@ -510,7 +510,8 @@ def _update_env(monkeypatch, *, latest, source, ran=None):
     monkeypatch.setattr(U, "fetch_latest_version", lambda *a, **k: latest)
     monkeypatch.setattr(U, "read_source", lambda: source)
     monkeypatch.setattr(
-        U, "run_upgrade", lambda log: (ran.append(True) if ran is not None else None) or 0
+        U, "run_upgrade",
+        lambda log, force=False: (ran.append(force) if ran is not None else None) or 0,
     )
     return cli
 
@@ -537,7 +538,7 @@ def test_co_ban_moi_thi_chay_nang_cap(monkeypatch):
     ran = []
     cli = _update_env(monkeypatch, latest="99.0.0", source=("uv-git", "https://x"), ran=ran)
     cli.cmd_update(build_parser().parse_args(["update"]))
-    assert ran == [True]
+    assert ran == [False]      # nâng cấp thường, không kèm --reinstall
 
 
 def test_force_cai_lai_du_da_moi_nhat(monkeypatch):
@@ -546,7 +547,7 @@ def test_force_cai_lai_du_da_moi_nhat(monkeypatch):
     ran = []
     cli = _update_env(monkeypatch, latest=__version__, source=("uv-git", "https://x"), ran=ran)
     cli.cmd_update(build_parser().parse_args(["update", "--force"]))
-    assert ran == [True]
+    assert ran == [True]       # --force truyền xuống thành --reinstall
 
 
 def test_no_check_bo_qua_github(monkeypatch):
@@ -555,12 +556,12 @@ def test_no_check_bo_qua_github(monkeypatch):
 
     ran = []
     monkeypatch.setattr(U, "read_source", lambda: ("uv-git", "https://x"))
-    monkeypatch.setattr(U, "run_upgrade", lambda log: ran.append(True) or 0)
+    monkeypatch.setattr(U, "run_upgrade", lambda log, force=False: ran.append(force) or 0)
     monkeypatch.setattr(
         U, "fetch_latest_version", lambda *a, **k: pytest.fail("không được hỏi GitHub")
     )
     cli.cmd_update(build_parser().parse_args(["update", "--no-check"]))
-    assert ran == [True]
+    assert ran == [False]
 
 
 def test_check_va_no_check_nguoc_nhau(monkeypatch):
@@ -585,7 +586,7 @@ def test_nang_cap_that_bai_thi_thoat_khac_0(monkeypatch):
 
     monkeypatch.setattr(U, "fetch_latest_version", lambda *a, **k: "99.0.0")
     monkeypatch.setattr(U, "read_source", lambda: ("uv-git", "https://x"))
-    monkeypatch.setattr(U, "run_upgrade", lambda log: 2)
+    monkeypatch.setattr(U, "run_upgrade", lambda log, force=False: 2)
     with pytest.raises(SystemExit) as e:
         cli.cmd_update(build_parser().parse_args(["update"]))
     assert e.value.code == 2

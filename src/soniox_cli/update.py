@@ -81,13 +81,20 @@ def describe_source(kind: str, detail: str | None) -> str:
     return "không nhận ra (không phải uv tool)"
 
 
-def upgrade_command() -> list[str]:
-    """`--reinstall` là bắt buộc với nguồn git.
+def upgrade_command(force: bool = False) -> list[str]:
+    """Lệnh nâng cấp của uv.
 
-    Không có nó, uv so version đã ghi trong receipt, thấy trùng thì báo
-    "Nothing to upgrade" và bỏ qua commit mới trên nhánh.
+    `uv tool upgrade` tự giải lại git ref và lấy commit mới, đã kiểm chứng bằng
+    một lần nhảy 0.3.0 -> 0.4.0 trên bản cài thật. Không cần `--reinstall` cho
+    trường hợp thường.
+
+    `--reinstall` chỉ dùng cho `--force`: cài lại kể cả khi uv cho rằng đã mới
+    nhất và báo "Nothing to upgrade".
     """
-    return ["uv", "tool", "upgrade", PACKAGE, "--reinstall"]
+    cmd = ["uv", "tool", "upgrade", PACKAGE]
+    if force:
+        cmd.append("--reinstall")
+    return cmd
 
 
 def manual_instructions(kind: str, detail: str | None) -> str:
@@ -115,13 +122,13 @@ def fetch_latest_version(timeout: float = 10.0) -> str:
     return latest
 
 
-def run_upgrade(log) -> int:
+def run_upgrade(log, force: bool = False) -> int:
     """Chạy lệnh nâng cấp của uv. Trả về mã thoát của tiến trình con."""
     if not shutil.which("uv"):
         raise UpdateError(
             "không tìm thấy `uv` để nâng cấp.\n"
             "  cài uv: curl -LsSf https://astral.sh/uv/install.sh | sh"
         )
-    cmd = upgrade_command()
+    cmd = upgrade_command(force)
     log("$ " + " ".join(cmd))
     return subprocess.run(cmd, check=False).returncode
