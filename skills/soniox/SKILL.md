@@ -24,10 +24,11 @@ soniox auth check
 | Command                                                          | What it does                                                           |
 | ---------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `soniox stt transcribe <file\|url>`                              | Transcribe. By default **waits, prints the text, cleans up** on Soniox |
-| `soniox stt transcribe <x> --no-wait`                            | Returns the `id` right away (long jobs); poll later                    |
+| `soniox stt transcribe <x> --no-wait`                            | Returns the `id` within seconds; poll later. Use when the process may not survive the wait |
 | `soniox stt transcribe <x> --subtitles srt\|vtt`                 | Emit **subtitles**                                                     |
 | `soniox stt get\|transcript\|list\|count\|delete\|delete-all`    | Manage transcriptions                                                  |
-| `soniox stt transcript <id> --group-speakers`                    | Regroup by speaker (if the transcript has them)                        |
+| `soniox stt transcript <id>`                                     | Fetch the transcript of an existing job. Speakers and translations are rendered automatically |
+| `soniox stt transcript <id> --destroy`                           | Same, then clean up the transcription **and** its file                 |
 | `soniox files upload\|list\|get\|count\|delete\|delete-all`      | Uploaded audio files                                                   |
 | `soniox tts generate "<text>" -o out.wav`                        | Text → audio file                                                      |
 | `soniox voices list\|get\|create\|count\|recompute\|delete`      | Voice cloning                                                          |
@@ -35,6 +36,8 @@ soniox auth check
 | `soniox update [--check]`                                        | Update the CLI to the latest version                                   |
 
 Add `--json` to any command for the full JSON (token level: timestamp, speaker, confidence, language).
+
+On `stt transcribe` and `stt transcript`, `--json` honours `-o` and the size warning. A two-hour meeting is roughly 16 MB of JSON, so always pair them: `--json -o /tmp/x.json`. Other commands print JSON to stdout; redirect with `>` if it could be large.
 
 ## Video: pass it straight in, do not convert it yourself
 
@@ -56,6 +59,42 @@ upload 55 KB thay vì 224 KB (meeting.m4a)
 - If `ffmpeg` is missing the CLI says so and how to install it. To run without ffmpeg anyway: `--no-extract-audio` (uploads the whole video; Soniox still accepts `mp4`/`webm`, it just costs bandwidth).
 - To keep the extracted audio: `--keep-extracted`, the CLI prints the path and does **not** delete it. Delete it by hand when done.
 - Familiar audio extensions (`.mp3`, `.wav`, `.m4a`, ...) go straight through, ffmpeg is never touched.
+
+## Waiting: pick by process lifetime, not by audio length
+
+The job runs on Soniox, not on this machine. The only question worth asking is: **will this process outlive the wait?**
+
+```bash
+# Process is safe for the duration (short clip, interactive shell): just wait.
+soniox stt transcribe short.mp3 -o /tmp/out.txt
+
+# Process might not survive (long upload, near a session/turn boundary, anything
+# that could be torn down): take the id first, then poll. Process lifetime stops mattering.
+id=$(soniox stt transcribe long.mp4 --no-wait --ref meeting-2026-09-13 --json | jq -r .id)
+echo "$id" > /tmp/soniox-job.id          # write it somewhere that outlives this process
+soniox stt get "$id"                      # status: queued -> processing -> completed
+soniox stt transcript "$id" -o /tmp/out.txt --destroy
+```
+
+Running in the background is **not** the same as being durable: a backgrounded process dies with its parent just the same. `--no-wait` returns the id within seconds, which is what actually makes the work survivable.
+
+The id is also printed to **stderr** the moment the transcription is created, on every path, so a captured log is a second way back in.
+
+## Recovery: the job almost certainly survived
+
+A dead local process does not kill the job. Get it back:
+
+```bash
+soniox stt list                                   # id, status, created_at, duration, filename
+soniox stt list --json | jq '.[] | select(.client_reference_id=="meeting-2026-09-13")'
+soniox stt transcript <id> -o /tmp/out.txt        # pull the transcript
+soniox stt transcript <id> --destroy              # pull it, then clean up transcription + file
+```
+
+- `--ref <label>` at `transcribe` time tags **both the uploaded file and the transcription**, which is the only way back if the process died mid-upload, before any id existed. Without it, match on `created_at` + `filename` + duration by eye.
+- **`--no-wait` has no auto-destroy.** Nothing is cleaned up for you. Finish with `--destroy` or the quota fills up quietly.
+- Ctrl-C and SIGTERM clean up local temp files and exit, but **never delete the remote job**. The id was already printed to stderr when the job was created. The leftover job is the thing that saves you; treat it as an asset, not as garbage.
+- Transcriptions are deleted by Soniox 30 days after creation. That is the recovery window.
 
 ## Save context: write long audio to a file
 
@@ -102,9 +141,10 @@ soniox stt transcribe english.mp3 --translate vi
 # Two-way translation
 soniox stt transcribe call.mp3 --translate two-way:en,vi
 
-# Long job: do not wait
-id=$(soniox stt transcribe long.mp3 --no-wait --json | jq -r .id)
-soniox stt transcript "$id"          # once status=completed
+# Process may not survive the wait: take the id first, poll, then clean up by hand
+id=$(soniox stt transcribe long.mp3 --no-wait --ref my-label --json | jq -r .id)
+soniox stt get "$id"                                    # queued -> processing -> completed
+soniox stt transcript "$id" -o /tmp/out.txt --destroy    # --no-wait has no auto-destroy
 
 # SRT subtitles with speaker separation
 soniox stt transcribe meeting.mp3 --diarize --subtitles srt -o meeting.srt
@@ -133,10 +173,11 @@ soniox concurrency                      # concurrent sessions and limits, to dia
 
 ## Important notes
 
-- **Auto-destroy**: `transcribe` deletes the file and the transcription from Soniox once the text is retrieved (keeps the quota clear). Use `--keep` if `get`/`transcript` will be needed later. On `--timeout` (default 600s) the CLI prints the id plus the commands to fetch the result or clean up by hand.
+- **Auto-destroy**: `transcribe` deletes the file and the transcription from Soniox once the text is retrieved (keeps the quota clear). Use `--keep` if `get`/`transcript` will be needed later. It only fires on a **completed** run: `--no-wait`, a timeout, Ctrl-C and SIGTERM all leave the job in place on purpose, and the CLI prints the id plus the commands to fetch or clean up.
+- **Speakers and translations render themselves.** Both `transcribe` and `transcript` label speakers when the tokens carry them, and interleave translations when present. Use `--flat` to suppress speaker labels. (`--group-speakers` is a deprecated no-op kept for compatibility.)
 - **STT input**: a local audio or video file, `--file-id`, or a URL that **downloads the audio file directly**. Video can only be extracted from a local file; for a URL, Soniox downloads on its side, so fetch it locally first to extract. YouTube / Drive / web page links will break (Soniox gets HTML back and reports "Invalid audio file"): download the file first and pass the local path. Do not pass `--file-id` together with a file or URL.
 - **Subtitles**: `--subtitles srt|vtt`, add `-o <file>` to write to a file. `--subtitle-track` picks `auto` (default, uses the translation when there is one), `original`, `translation`, or `both` (bilingual). Cannot be combined with `--no-wait`.
-- **Long files**: waits up to 600s by default. Longer than that, raise `--timeout`, or use `--no-wait` and poll with `stt transcript <id>`. On timeout the CLI prints the id plus the command to fetch the result.
+- **Long files**: timeout is rarely the problem, **process lifetime is**. Soniox is fast (one measurement, 2026-09-13: 2h40m of audio finished in under 5 minutes, so the 600s default was never close to being hit); the local time goes into extracting and uploading. What actually kills a run is the local process dying. See "Waiting" above.
 - **TTS**: `-o <file>` is required; the format is inferred from the extension (`.wav`, `.mp3`, `.flac`, `.opus`, `.aac`, `.pcm`). An unknown extension is an error, force it with `--format`. `--speed` ranges from 0.7 to 1.3.
 - **Rare parameters**: `--config-json '{...}'` for both STT and TTS. A wrong field name errors out with the list of valid ones.
 - **Errors**: go to stderr with a non-zero exit code. Read the message (it carries a `request_id`) to diagnose.

@@ -61,6 +61,7 @@ Gỡ: `uv tool uninstall soniox-cli`
 | `soniox stt transcribe <file\|url>` | Phiên âm; **video được tách audio trước khi upload**; mặc định **chờ xong + tự dọn** file/transcription trên Soniox |
 | `soniox stt transcribe <x> --subtitles srt` | Xuất **phụ đề SRT / VTT** |
 | `soniox stt get\|list\|transcript\|count\|delete\|delete-all` | Quản lý transcription |
+| `soniox stt transcript <id> --destroy` | Kéo transcript về rồi dọn cả transcription lẫn file |
 | `soniox files upload\|list\|get\|count\|delete\|delete-all` | File audio đã upload |
 | `soniox tts generate "<text>" -o out.wav` | Sinh giọng nói ra file |
 | `soniox voices list\|get\|create\|count\|recompute\|delete` | Voice cloning |
@@ -87,9 +88,9 @@ soniox stt transcribe bai.mp3 --translate en
 # Phiên âm từ URL công khai, lấy token-level JSON
 soniox stt transcribe https://soniox.com/media/examples/coffee_shop.mp3 --json
 
-# Không chờ (job dài): trả id để poll sau
-soniox stt transcribe long.mp3 --no-wait
-soniox stt transcript <id>
+# Không chờ (khi tiến trình local có thể không sống tới lúc xong): trả id ngay
+soniox stt transcribe long.mp3 --no-wait --ref hop-2026-09-13
+soniox stt transcript <id> -o /tmp/hop.txt --destroy   # --no-wait không tự dọn
 
 # Phụ đề SRT, tách người nói
 soniox stt transcribe hop.mp3 --diarize --subtitles srt -o hop.srt
@@ -136,7 +137,21 @@ Cần `ffmpeg` **chỉ khi** đầu vào là video. macOS: `brew install ffmpeg`
 
 Mặc định mọi kết quả in ra **stdout**, không tạo file nào. `-o <file>` ghi thẳng ra file (tự tạo thư mục cha), dùng được cho cả text thuần lẫn `--subtitles`. Riêng `tts generate` thì `-o` là bắt buộc vì đầu ra là nhị phân.
 
-Với bản ghi dài, nên dùng `-o` rồi đọc phần cần thay vì đổ hết ra màn hình. Quên `-o` mà kết quả dài hơn 20.000 ký tự thì CLI nhắc một dòng ở stderr (stderr nên không ảnh hưởng `|` và `>`).
+Với bản ghi dài, nên dùng `-o` rồi đọc phần cần thay vì đổ hết ra màn hình. Quên `-o` mà kết quả dài hơn 20.000 ký tự thì CLI nhắc một dòng ở stderr (stderr nên không ảnh hưởng `|` và `>`). `--json` cũng đi qua đúng đường này ở `stt transcribe` (khi có chờ kết quả) và `stt transcript`, nên `-o` và lời nhắc đều có tác dụng. Các lệnh còn lại, kể cả `transcribe --no-wait --json`, in JSON thẳng ra stdout: output ngắn nên dùng `>` là đủ.
+
+## Lấy lại kết quả khi mất tiến trình
+
+Job chạy trên Soniox, không chạy trên máy bạn. Tiến trình local chết không làm job chết theo, nên gần như luôn lấy lại được:
+
+```bash
+soniox stt list                                  # id, trạng thái, thời điểm tạo, thời lượng, tên file
+soniox stt transcript <id> -o /tmp/ket-qua.txt   # kéo transcript về
+soniox stt transcript <id> --destroy             # kéo về xong dọn luôn, cả file đính kèm
+```
+
+Đặt `--ref <nhãn>` lúc `transcribe` thì `stt list --json` lọc được chính xác theo `client_reference_id`, khỏi phải đoán theo tên file. Nhãn gắn cho **cả file lẫn transcription**, nên còn tìm được cả trường hợp bị giết giữa lúc upload, lúc mà transcription còn chưa kịp tồn tại.
+
+`--no-wait` **không** có auto-destroy. Dọn tay bằng `stt transcript <id> --destroy`, hoặc `stt delete <id> --destroy`.
 
 ## Phụ đề
 
@@ -158,8 +173,11 @@ Soniox trả token bản dịch **không kèm mốc thời gian**; CLI mượn k
 ## Hành vi đáng lưu ý
 
 - **`transcribe` mặc định tự dọn** (`destroy`) file + transcription sau khi lấy transcript, tránh đầy quota Soniox. Dùng `--keep` để giữ lại (khi cần `get`/`transcript` sau).
+  - Id được in ra stderr **ngay khi transcription vừa tạo**, trước cả lúc bắt đầu chờ. Mất kết nối, mất tiến trình, đóng máy: vẫn còn chỗ bám để lấy lại kết quả.
   - Hết `--timeout` (mặc định 600s): CLI in ra id kèm lệnh để lấy kết quả hoặc dọn thủ công.
-  - Ctrl-C giữa chừng: CLI tự dọn transcription vừa tạo (trừ khi có `--keep`), không bỏ mồ côi dữ liệu trên Soniox.
+  - Ctrl-C hoặc `SIGTERM` giữa chừng: CLI dọn file tạm cục bộ rồi in id, **không xóa job trên Soniox**. Hủy chờ không phải hủy job. Xem [ADR-0008](docs/adr/0008-tin-hieu-huy-khong-xoa-du-lieu-tu-xa.md).
+  - `--ref <nhãn>` gắn nhãn tự đặt cho cả file lẫn transcription, để tìm lại bằng `stt list` khi mất sạch ngữ cảnh.
+- **Người nói và bản dịch tự hiện ra.** Cả `transcribe` lẫn `transcript` đều gắn nhãn `Speaker N:` khi token có speaker, và xen kẽ bản dịch khi có. `--flat` tắt nhãn Speaker (bản dịch vẫn giữ). `--group-speakers` là cờ cũ, nay không còn tác dụng, giữ lại cho tương thích.
 - **Định dạng TTS** suy từ đuôi `-o`: `.wav`, `.mp3`, `.flac`, `.opus`, `.aac`, `.pcm`. Đuôi lạ sẽ báo lỗi chứ không âm thầm ghi byte WAV vào file sai đuôi; muốn ép thì dùng `--format`.
 - **`--speed`** trong khoảng 0.7 đến 1.3, kiểm tra ngay phía client.
 - **Tham số ít dùng**: truyền qua `--config-json '{...}'`.

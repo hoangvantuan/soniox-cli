@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -125,8 +126,12 @@ def write_out(args, text: str) -> None:
     print(f"đã ghi {len(text)} ký tự -> {path}")
 
 
+def json_text(data: Any) -> str:
+    return json.dumps(jsonable(data), ensure_ascii=False, indent=2, default=str)
+
+
 def print_json(data: Any) -> None:
-    print(json.dumps(jsonable(data), ensure_ascii=False, indent=2, default=str))
+    print(json_text(data))
 
 
 def run(fn, args) -> None:
@@ -349,6 +354,13 @@ def _upload_ready(args, src: dict):
         yield {**src, "file": str(ready)}
 
 
+def _recovery_hint(transcription_id: str) -> str:
+    return (
+        f"  lấy kết quả sau: soniox stt transcript {transcription_id}\n"
+        f"  hoặc dọn đi:     soniox stt delete {transcription_id} --destroy"
+    )
+
+
 def _try_destroy(client, transcription_id: str, quiet: bool = False) -> None:
     """Dọn transcription + file đính kèm. Nuốt lỗi: đây là bước dọn, không phải kết quả."""
     try:
@@ -375,7 +387,17 @@ def cmd_stt_transcribe(args) -> None:
             "poll xong rồi chạy: soniox stt transcript <id> --subtitles " + args.subtitles)
 
     with _upload_ready(args, src) as src:
-        tr = client.stt.transcribe(model=model, config=cfg, **src)
+        tr = client.stt.transcribe(
+            model=model, config=cfg, client_reference_id=args.ref, **src
+        )
+        # In ngay tại đây, không dời ra sau khối `with`: id tồn tại từ giây này,
+        # mà khối `with` còn phải dọn file tạm trước khi thoát. Vô điều kiện, kể
+        # cả trên đường hạnh phúc: id là dữ kiện, không phải artifact của nhánh
+        # lỗi. SIGKILL, mất điện, harness teardown không chạy `except` nào cả.
+        eprint(
+            f"transcription {tr.id} đã tạo; lấy lại bất cứ lúc nào: "
+            f"soniox stt transcript {tr.id}"
+        )
 
     if args.no_wait:
         emit(
@@ -391,16 +413,16 @@ def cmd_stt_transcribe(args) -> None:
     except TimeoutError:
         die(
             f"hết thời gian chờ ({args.timeout}s); transcription {tr.id} vẫn đang chạy.\n"
-            f"  lấy kết quả sau: soniox stt transcript {tr.id}\n"
-            f"  hoặc dọn đi:     soniox stt delete {tr.id} --destroy\n"
+            f"{_recovery_hint(tr.id)}\n"
             f"  (hoặc tăng --timeout, hoặc dùng --no-wait ngay từ đầu)"
         )
     except KeyboardInterrupt:
-        if args.keep:
-            eprint(f"đã hủy; transcription {tr.id} vẫn còn trên Soniox.")
-        else:
-            eprint(f"đã hủy; đang dọn transcription {tr.id}...")
-            _try_destroy(client, tr.id)
+        # Cố ý không dọn: Ctrl-C nghĩa là thôi đứng chờ, không phải vứt dữ liệu.
+        # Xem ADR-0008.
+        eprint(
+            f"đã thôi chờ; transcription {tr.id} vẫn đang chạy trên Soniox.\n"
+            f"{_recovery_hint(tr.id)}"
+        )
         raise
 
     if tr.status == "error":
@@ -413,13 +435,15 @@ def cmd_stt_transcribe(args) -> None:
     if not args.keep:
         _try_destroy(client, tr.id)
 
-    emit_transcript(args, transcript, diarize=diarization_on(args, cfg))
+    emit_transcript(args, transcript, diarize=diarization_on(args, cfg) and not args.flat)
 
 
 def emit_transcript(args, transcript, *, diarize: bool) -> None:
     """In transcript theo đúng dạng người dùng yêu cầu: JSON, phụ đề, hay text."""
     if wants_json(args):
-        print_json(transcript)
+        # Qua write_out chứ không print thẳng: đây là đường ra dữ liệu lớn nhất
+        # của CLI, nó phải có -o và có phanh như mọi đường ra khác.
+        write_out(args, json_text(transcript))
         return
     fmt = getattr(args, "subtitles", None)
     if fmt:
@@ -454,6 +478,26 @@ def cmd_stt_get(args) -> None:
     )
 
 
+def _row_created(t) -> str:
+    ts = getattr(t, "created_at", None)
+    return ts.astimezone().strftime("%Y-%m-%d %H:%M") if ts else "-"
+
+
+def _row_duration(t) -> str:
+    """`audio_duration_ms` chỉ có sau khi Soniox bắt đầu xử lý, nên queued thì trống."""
+    ms = getattr(t, "audio_duration_ms", None)
+    return _fmt_duration(ms) if ms else "-"
+
+
+def _list_row(t) -> str:
+    """Đủ để phân biệt hai job trùng tên file: thời điểm tạo, thời lượng, nhãn tự đặt."""
+    ref = getattr(t, "client_reference_id", None)
+    return (
+        f"{t.id}  {t.status:<10}  {_row_created(t):<16}  {_row_duration(t):>7}  "
+        f"{t.filename or ''}" + (f"  ref={ref}" if ref else "")
+    )
+
+
 def cmd_stt_list(args) -> None:
     client = get_client()
     rows = _rows(client, "stt", args)
@@ -462,8 +506,7 @@ def cmd_stt_list(args) -> None:
     emit(
         args,
         rows,
-        lambda d: "\n".join(f"{t.id}  {t.status:<10}  {t.filename or ''}" for t in d)
-        or "(chưa có transcription nào)",
+        lambda d: "\n".join(_list_row(t) for t in d) or "(chưa có transcription nào)",
     )
 
 
@@ -502,12 +545,21 @@ def cmd_stt_delete_all(args) -> None:
 
 
 def cmd_stt_transcript(args) -> None:
+    """Lấy transcript của một transcription đã có.
+
+    Không có đường tắt "text thuần" nào ở đây: `transcript.text` chỉ chứa bản gốc
+    và không có nhãn speaker, nên đi tắt qua nó là lệnh cứu hộ trả về kết quả
+    kém hơn `stt transcribe`. Xem ADR-0008.
+    """
     client = get_client()
     t = client.stt.get_transcript(args.id)
-    if not wants_json(args) and not args.subtitles:  # noqa: SIM102 - đường nhanh cho text thuần
-        write_out(args, t.text)
-        return
-    emit_transcript(args, t, diarize=args.group_speakers)
+    if args.group_speakers:
+        eprint("lưu ý: --group-speakers không còn cần thiết, token có speaker thì "
+               "output tự gộp. Dùng --flat nếu muốn text phẳng.")
+    emit_transcript(args, t, diarize=not args.flat)
+    if args.destroy:
+        client.stt.destroy(args.id)
+        eprint(f"đã xóa transcription {args.id} và file đính kèm")
 
 
 def cmd_stt_delete(args) -> None:
@@ -968,7 +1020,7 @@ def _add_upload_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_subtitle_flags(p: argparse.ArgumentParser) -> None:
+def _add_output_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--subtitles",
         choices=("srt", "vtt"),
@@ -985,6 +1037,12 @@ def _add_subtitle_flags(p: argparse.ArgumentParser) -> None:
         type=int,
         default=subtitles.DEFAULT_MAX_CHARS,
         help=f"số ký tự tối đa mỗi cue (mặc định {subtitles.DEFAULT_MAX_CHARS})",
+    )
+    p.add_argument(
+        "--flat",
+        action="store_true",
+        help="in text phẳng, không gắn nhãn Speaker (bản dịch vẫn giữ nguyên). "
+             "Mặc định: token có speaker thì tự gộp",
     )
     p.add_argument("-o", "--output", help="ghi ra file thay vì in ra stdout")
 
@@ -1016,10 +1074,19 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--context", help="ngữ cảnh/thuật ngữ để tăng độ chính xác")
     tr.add_argument("--config-json", help="JSON gộp thẳng vào CreateTranscriptionConfig")
     tr.add_argument("--no-wait", action="store_true", help="không chờ; trả về id để poll sau")
-    tr.add_argument("--keep", action="store_true", help="không tự xóa transcription/file sau khi xong")
+    tr.add_argument(
+        "--ref",
+        help="nhãn tự đặt (client_reference_id) gắn cho cả file lẫn transcription, "
+             "để tìm lại job bằng `stt list` sau khi mất ngữ cảnh",
+    )
+    tr.add_argument(
+        "--keep",
+        action="store_true",
+        help="không tự xóa transcription/file sau khi phiên âm xong",
+    )
     tr.add_argument("--timeout", type=float, default=600.0, help="giới hạn chờ (giây), mặc định 600")
     _add_upload_flags(tr)
-    _add_subtitle_flags(tr)
+    _add_output_flags(tr)
     _add_json_flag(tr)
     tr.set_defaults(func=cmd_stt_transcribe)
 
@@ -1050,9 +1117,14 @@ def build_parser() -> argparse.ArgumentParser:
     ts.add_argument(
         "--group-speakers",
         action="store_true",
-        help="gộp output theo người nói (chỉ có tác dụng nếu transcript đã có diarization)",
+        help="(bỏ dùng) output tự gộp khi token có speaker; cờ này không còn tác dụng",
     )
-    _add_subtitle_flags(ts)
+    ts.add_argument(
+        "--destroy",
+        action="store_true",
+        help="xóa transcription và file đính kèm sau khi lấy transcript xong",
+    )
+    _add_output_flags(ts)
     _add_json_flag(ts)
     ts.set_defaults(func=cmd_stt_transcript)
 
@@ -1190,7 +1262,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _on_sigterm(signum, frame) -> NoReturn:  # noqa: ARG001 - chữ ký do signal quy định
+    """Đổi SIGTERM thành SystemExit để mọi khối `finally` được chạy.
+
+    Python mặc định kết thúc ngay khi nhận SIGTERM, bỏ qua `finally`: file audio
+    đã tách sẽ nằm lại trong temp vĩnh viễn.
+
+    Cố ý KHÔNG dọn transcription trên Soniox. SIGTERM (harness teardown, `kill`,
+    reboot) không mang ý "vứt dữ liệu đi", và job còn lại chính là thứ cứu được
+    một lần chạy đã mất tiến trình. Xem ADR-0008.
+    """
+    eprint("nhận SIGTERM: dọn file tạm cục bộ rồi thoát; job trên Soniox vẫn còn.")
+    raise SystemExit(143)
+
+
 def main(argv: list[str] | None = None) -> None:
+    signal.signal(signal.SIGTERM, _on_sigterm)
     parser = build_parser()
     args = parser.parse_args(argv)
     run(args.func, args)

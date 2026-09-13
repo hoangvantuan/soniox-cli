@@ -200,6 +200,25 @@ def test_don_file_tam_ca_khi_co_loi(tmp_path, monkeypatch):
     assert tmp_dir is not None and not tmp_dir.exists()
 
 
+def test_don_file_tam_khi_nhan_systemexit(tmp_path, monkeypatch):
+    """SIGTERM được đổi thành SystemExit chính là để `finally` này được chạy.
+
+    Python mặc định kết thúc ngay khi nhận SIGTERM: 148 MB audio đã tách sẽ nằm
+    lại trong temp vĩnh viễn. Xem `cli._on_sigterm`.
+    """
+    src = _fake_video(
+        monkeypatch, tmp_path,
+        streams=[{"codec_type": "video", "codec_name": "h264"},
+                 {"codec_type": "audio", "codec_name": "aac"}],
+    )
+    tmp_dir = None
+    with pytest.raises(SystemExit):
+        with media.prepared_upload(src) as ready:
+            tmp_dir = ready.parent
+            raise SystemExit(143)
+    assert tmp_dir is not None and not tmp_dir.exists()
+
+
 def test_file_khong_co_luong_hinh_thi_upload_thang(tmp_path, monkeypatch):
     src = _fake_video(
         monkeypatch, tmp_path, streams=[{"codec_type": "audio", "codec_name": "aac"}]

@@ -26,6 +26,10 @@ CLI **không giữ state**. Mọi thứ bền vững đều nằm trên Soniox; 
 | **cue** | Một khối phụ đề: khoảng thời gian cộng đoạn text hiện lên màn hình. Token Soniox nhỏ hơn từ nên phải gom lại thành cue. |
 | **track** | Luồng token dùng cho phụ đề: `original`, `translation`, `both`, hay `auto` (có dịch thì lấy dịch). |
 | **escape hatch** | `--config-json`: đường truyền thẳng tham số mà CLI chưa có cờ riêng. Xem [ADR-0004](docs/adr/0004-loc-config-json-bat-doi-xung.md). |
+| **mồ côi** | Job mà **id của nó không tồn tại ở đâu ngoài Soniox**. Không phải "job còn sót lại": job còn sót mà biết id là tài sản phục hồi, không phải rác. |
+| **ref** | `client_reference_id`: nhãn do người gọi đặt, gắn cho **cả file lẫn transcription**. Đặt bằng `--ref`, tìm lại bằng `stt list`. Đây là cách chống mồ côi khi id còn chưa kịp tồn tại. |
+| **hủy chờ** | Thôi đứng đợi kết quả (`Ctrl-C`, `SIGTERM`). **Không** đụng tới job trên Soniox. Xem [ADR-0008](docs/adr/0008-tin-hieu-huy-khong-xoa-du-lieu-tu-xa.md). |
+| **hủy job** | Xóa dữ liệu trên Soniox. Chỉ xảy ra khi người dùng nói thẳng (`stt delete`), hoặc khi `transcribe` đã lấy xong transcript. |
 
 ## Phân biệt dễ nhầm
 
@@ -33,3 +37,5 @@ CLI **không giữ state**. Mọi thứ bền vững đều nằm trên Soniox; 
 - **delete ≠ destroy**: xem bảng trên. Nhầm hai từ này làm đầy quota file mà không ai nhận ra.
 - **`--keep` không phải "lưu về máy"**: nó nghĩa là *giữ lại trên Soniox*, không tự dọn.
 - **`--no-wait` không phải chạy nền ở local**: công việc luôn chạy trên Soniox; cờ này chỉ quyết định CLI có đứng chờ hay không.
+- **hủy chờ ≠ hủy job**: `Ctrl-C` và `SIGTERM` chỉ nói được "thôi đợi", không nói được "vứt dữ liệu". Rác quota tự lành sau 30 ngày; transcript đã xóa thì không.
+- **mồ côi không phải "còn sót"**: thứ quyết định là id có tồn tại ngoài tiến trình hay không, không phải job có còn trên Soniox hay không.

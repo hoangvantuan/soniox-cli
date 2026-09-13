@@ -501,6 +501,279 @@ def test_transcript_co_group_speakers_khong_phai_diarize():
 
 
 # --------------------------------------------------------------------------- #
+# stt transcript phải in ra y hệt stt transcribe cho cùng một job.
+# Lệnh cứu hộ không được cho kết quả kém hơn lệnh nó cứu hộ.
+# --------------------------------------------------------------------------- #
+def _fake_transcript_client(monkeypatch, transcript, destroyed=None):
+    import soniox_cli.cli as cli
+
+    class FakeStt:
+        def get_transcript(self, _id):
+            return transcript
+
+        def destroy(self, tid):
+            if destroyed is not None:
+                destroyed.append(tid)
+
+    monkeypatch.setattr(cli, "get_client", lambda: SimpleNamespace(stt=FakeStt()))
+    return cli
+
+
+def test_transcript_tu_gop_speaker_khong_can_co(monkeypatch, capsys):
+    """Token có speaker thì gộp, không bắt người dùng nhớ gõ cờ."""
+    t = SimpleNamespace(
+        text="A B",
+        tokens=[tok("A", speaker="1"), tok(" B", speaker="2")],
+    )
+    cli = _fake_transcript_client(monkeypatch, t)
+    cli.cmd_stt_transcript(build_parser().parse_args(["stt", "transcript", "abc"]))
+    out = capsys.readouterr().out
+    assert "Speaker 1: A" in out
+    assert "Speaker 2: B" in out
+
+
+def test_transcript_giu_ban_dich(monkeypatch, capsys):
+    """`transcript.text` chỉ có bản gốc; bản dịch phải dựng lại từ token."""
+    t = SimpleNamespace(
+        text="Hello",
+        tokens=[
+            tok("Hello", translation_status="original"),
+            tok("Xin chào", translation_status="translation", language="vi"),
+        ],
+    )
+    cli = _fake_transcript_client(monkeypatch, t)
+    cli.cmd_stt_transcript(build_parser().parse_args(["stt", "transcript", "abc"]))
+    out = capsys.readouterr().out
+    assert "→ vi: Xin chào" in out
+
+
+def test_transcript_flat_in_text_phang(monkeypatch, capsys):
+    t = SimpleNamespace(text="A B", tokens=[tok("A", speaker="1"), tok(" B", speaker="2")])
+    cli = _fake_transcript_client(monkeypatch, t)
+    cli.cmd_stt_transcript(build_parser().parse_args(["stt", "transcript", "abc", "--flat"]))
+    assert capsys.readouterr().out.strip() == "A B"
+
+
+def test_transcript_json_ton_trong_output(monkeypatch, tmp_path, capsys):
+    """--json không được nuốt -o, nếu không 16 MB đổ thẳng ra stdout."""
+    out = tmp_path / "t.json"
+    t = SimpleNamespace(text="xin chào", tokens=[])
+    cli = _fake_transcript_client(monkeypatch, t)
+    cli.cmd_stt_transcript(
+        build_parser().parse_args(["stt", "transcript", "abc", "--json", "-o", str(out)])
+    )
+    assert "xin chào" in out.read_text(encoding="utf-8")
+    assert "xin chào" not in capsys.readouterr().out
+
+
+def test_transcript_destroy_don_ca_file(monkeypatch, capsys):
+    destroyed: list[str] = []
+    t = SimpleNamespace(text="x", tokens=[])
+    cli = _fake_transcript_client(monkeypatch, t, destroyed)
+    cli.cmd_stt_transcript(
+        build_parser().parse_args(["stt", "transcript", "abc", "--destroy"])
+    )
+    capsys.readouterr()
+    assert destroyed == ["abc"]
+
+
+# --------------------------------------------------------------------------- #
+# Vòng đời tiến trình: id phải ra ngoài ngay, tín hiệu hủy không xóa dữ liệu xa
+# --------------------------------------------------------------------------- #
+def _transcribe_env(monkeypatch, *, wait, destroyed, created=None):
+    import soniox_cli.cli as cli
+
+    class FakeStt:
+        def transcribe(self, **kw):
+            if created is not None:
+                created.append(kw)
+            return SimpleNamespace(id="TR1", status="queued")
+
+        def wait(self, _id, timeout_sec=None):
+            return wait()
+
+        def get_transcript(self, _id):
+            return SimpleNamespace(text="xong", tokens=[])
+
+        def destroy(self, tid):
+            destroyed.append(tid)
+
+    monkeypatch.setattr(cli, "get_client", lambda: SimpleNamespace(stt=FakeStt()))
+    return cli
+
+
+def _transcribe_args(tmp_path, *extra):
+    f = tmp_path / "a.mp3"
+    f.write_bytes(b"x")
+    return build_parser().parse_args(["stt", "transcribe", str(f), *extra])
+
+
+def test_transcribe_in_id_ngay_tren_duong_hanh_phuc(monkeypatch, tmp_path, capsys):
+    """Id là dữ kiện, không phải artifact của nhánh lỗi."""
+    destroyed: list[str] = []
+    cli = _transcribe_env(
+        monkeypatch,
+        wait=lambda: SimpleNamespace(id="TR1", status="completed"),
+        destroyed=destroyed,
+    )
+    cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
+    assert "TR1" in capsys.readouterr().err
+
+
+def test_transcribe_in_id_ca_khi_no_wait(monkeypatch, tmp_path, capsys):
+    """--no-wait in id ra stdout cho máy đọc; stderr vẫn phải có cho người/log."""
+    cli = _transcribe_env(monkeypatch, wait=lambda: None, destroyed=[])
+    cli.cmd_stt_transcribe(_transcribe_args(tmp_path, "--no-wait"))
+    cap = capsys.readouterr()
+    assert "TR1" in cap.err
+    assert "TR1" in cap.out
+
+
+def test_flat_co_tac_dung_tren_ca_transcribe(monkeypatch, tmp_path, capsys):
+    """`--flat` sống ở helper cờ output dùng chung, không riêng cho `transcript`."""
+    import soniox_cli.cli as cli
+
+    class FakeStt:
+        def transcribe(self, **kw):
+            return SimpleNamespace(id="TR1", status="queued")
+
+        def wait(self, _id, timeout_sec=None):
+            return SimpleNamespace(id="TR1", status="completed")
+
+        def get_transcript(self, _id):
+            return SimpleNamespace(
+                text="A B", tokens=[tok("A", speaker="1"), tok(" B", speaker="2")]
+            )
+
+        def destroy(self, _id):
+            pass
+
+    monkeypatch.setattr(cli, "get_client", lambda: SimpleNamespace(stt=FakeStt()))
+    cli.cmd_stt_transcribe(_transcribe_args(tmp_path, "--diarize"))
+    assert "Speaker 1: A" in capsys.readouterr().out
+
+    cli.cmd_stt_transcribe(_transcribe_args(tmp_path, "--diarize", "--flat"))
+    assert capsys.readouterr().out.strip() == "A B"
+
+
+def test_ctrl_c_khong_xoa_job_tren_soniox(monkeypatch, tmp_path, capsys):
+    """Hủy chờ khác hủy job. Xem ADR-0008."""
+    destroyed: list[str] = []
+
+    def boom():
+        raise KeyboardInterrupt
+
+    cli = _transcribe_env(monkeypatch, wait=boom, destroyed=destroyed)
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
+    assert destroyed == []
+    assert "TR1" in capsys.readouterr().err
+
+
+def test_systemexit_khong_kich_hoat_don_dep_tu_xa(monkeypatch, tmp_path):
+    """SIGTERM biến thành SystemExit; nó không được chạm vào job trên Soniox."""
+    destroyed: list[str] = []
+
+    def boom():
+        raise SystemExit(143)
+
+    cli = _transcribe_env(monkeypatch, wait=boom, destroyed=destroyed)
+    with pytest.raises(SystemExit):
+        cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
+    assert destroyed == []
+
+
+def test_ref_duoc_gui_len_soniox(monkeypatch, tmp_path, capsys):
+    created: list[dict] = []
+    cli = _transcribe_env(
+        monkeypatch,
+        wait=lambda: SimpleNamespace(id="TR1", status="completed"),
+        destroyed=[],
+        created=created,
+    )
+    cli.cmd_stt_transcribe(_transcribe_args(tmp_path, "--ref", "hop-2026-09-13"))
+    capsys.readouterr()
+    assert created[0]["client_reference_id"] == "hop-2026-09-13"
+
+
+def test_khong_co_ref_thi_khong_tu_bia(monkeypatch, tmp_path, capsys):
+    created: list[dict] = []
+    cli = _transcribe_env(
+        monkeypatch,
+        wait=lambda: SimpleNamespace(id="TR1", status="completed"),
+        destroyed=[],
+        created=created,
+    )
+    cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
+    capsys.readouterr()
+    assert created[0]["client_reference_id"] is None
+
+
+# --------------------------------------------------------------------------- #
+# SIGTERM
+# --------------------------------------------------------------------------- #
+def test_main_dang_ky_sigterm(monkeypatch):
+    import signal
+
+    import soniox_cli.cli as cli
+
+    seen: dict = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, h: seen.setdefault(sig, h))
+    monkeypatch.setattr(cli, "run", lambda fn, args: None)
+    cli.main(["stt", "list"])
+    assert signal.SIGTERM in seen
+
+
+def test_sigterm_nem_systemexit_143(capsys):
+    import signal
+
+    import soniox_cli.cli as cli
+
+    with pytest.raises(SystemExit) as e:
+        cli._on_sigterm(signal.SIGTERM, None)
+    assert e.value.code == 143
+    assert capsys.readouterr().err.strip() != ""
+
+
+# --------------------------------------------------------------------------- #
+# stt list: phân biệt được hai job mồ côi trùng tên
+# --------------------------------------------------------------------------- #
+def test_list_in_created_at_va_duration(monkeypatch, capsys):
+    import soniox_cli.cli as cli
+    from datetime import datetime, timezone
+
+    rows = [
+        SimpleNamespace(
+            id="A",
+            status="completed",
+            filename="hop.mp4",
+            created_at=datetime(2026, 9, 13, 14, 48, tzinfo=timezone.utc),
+            audio_duration_ms=9_600_000,
+            client_reference_id=None,
+        ),
+        SimpleNamespace(
+            id="B",
+            status="queued",
+            filename="hop.mp4",
+            created_at=None,
+            audio_duration_ms=None,
+            client_reference_id="hop-2",
+        ),
+    ]
+
+    class FakeStt:
+        def list(self, limit=None):
+            return SimpleNamespace(transcriptions=rows)
+
+    monkeypatch.setattr(cli, "get_client", lambda: SimpleNamespace(stt=FakeStt()))
+    cli.cmd_stt_list(build_parser().parse_args(["stt", "list"]))
+    out = capsys.readouterr().out
+    assert "2h40m" in out
+    assert "2026-09-13" in out
+    assert "ref=hop-2" in out
+
+
+# --------------------------------------------------------------------------- #
 # soniox update
 # --------------------------------------------------------------------------- #
 def _update_env(monkeypatch, *, latest, source, ran=None):

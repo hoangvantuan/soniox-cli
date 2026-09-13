@@ -32,8 +32,11 @@ Test cũng **không được để lại file trong temp của hệ thống**. N
 - **Không âm thầm đoán thay người dùng.** Đuôi file lạ, `--format` lạ, `--speed` ngoài dải: báo lỗi kèm danh sách hợp lệ.
 - **Đừng tin kiểu dữ liệu API trả về.** `cost_usd` về dạng chuỗi, `Voice.models` là danh sách dict chứ không phải chuỗi, token bản dịch có `start_ms = 0`. Ép kiểu và kiểm tra hình dạng trước khi dùng; cả ba đều là bug thật bắt được khi chạy với API thật, không phải suy đoán.
 - **Đừng để CLI tự ghi đè thư mục cài của chính nó.** `update.py` chỉ nhận diện cách cài rồi gọi `uv`; không chắc cài bằng gì thì in hướng dẫn chứ không đoán.
-- **File tạm phải xóa trong `finally`.** `media.prepared_upload` là context manager chính vì thế: bước dọn dẹp là bước hay bị bỏ sót nhất khi có lỗi giữa chừng. Ngoại lệ duy nhất là `--keep-extracted`, và khi đó đường dẫn được in ra.
-- **Dọn dẹp phải nắm được id.** `stt transcribe` tự tạo rồi tự chờ (thay vì dùng `transcribe_and_wait_with_tokens`) để khi timeout hoặc Ctrl-C còn id mà dọn hoặc lấy lại kết quả.
+- **File tạm phải xóa trong `finally`.** `media.prepared_upload` là context manager chính vì thế: bước dọn dẹp là bước hay bị bỏ sót nhất khi có lỗi giữa chừng. Ngoại lệ duy nhất là `--keep-extracted`, và khi đó đường dẫn được in ra. `finally` chỉ chạy nếu tiến trình còn sống đủ lâu, nên `main()` bắt `SIGTERM` và đổi nó thành `SystemExit`: mặc định Python bỏ qua `finally` khi nhận SIGTERM.
+- **Tín hiệu hủy không xóa dữ liệu từ xa.** `Ctrl-C` và `SIGTERM` nghĩa là *thôi đứng chờ*, không nghĩa là *vứt job đi*. Cả hai chỉ dọn cục bộ rồi thoát; job trên Soniox giữ nguyên. Id thì đã được in từ lúc transcription vừa tạo, xem gạch đầu dòng dưới. Rác quota dọn được bằng một lệnh và tự hết sau 30 ngày, transcript đã xóa thì phải trả tiền phiên âm lại. Xem [ADR-0008](docs/adr/0008-tin-hieu-huy-khong-xoa-du-lieu-tu-xa.md).
+- **Id phải ra ngoài ngay khi tồn tại.** `stt transcribe` tự tạo rồi tự chờ (thay vì dùng `transcribe_and_wait_with_tokens`) để luôn nắm được id, và in id ra stderr **vô điều kiện** ngay sau khi tạo. Đừng đưa lời in đó vào một nhánh nào cả: `SIGKILL`, mất điện và harness teardown không chạy `except` nào hết.
+- **Lệnh cứu hộ không được cho kết quả kém hơn lệnh nó cứu hộ.** `stt transcript <id>` phải in ra y hệt `stt transcribe` cho cùng một job, nên nó đi chung `emit_transcript`. Đừng thêm "đường nhanh cho text thuần": `transcript.text` không có nhãn speaker và không có bản dịch.
+- **Mọi đường ra dữ liệu lớn đều đi qua `write_out`.** Đó là chỗ duy nhất có `-o` và cảnh báo `BIG_OUTPUT_CHARS`. `print_json` đi thẳng ra stdout nên chỉ dùng cho output ngắn (`emit`); transcript thì dùng `write_out(args, json_text(...))`.
 
 ## Ràng buộc phụ thuộc
 
@@ -44,7 +47,7 @@ Test cũng **không được để lại file trong temp của hệ thống**. N
 Trước khi sửa code, đọc:
 
 - [`CONTEXT.md`](CONTEXT.md): bảng thuật ngữ và ranh giới. Phân biệt **transcription** với **transcript**, **delete** với **destroy**.
-- [`docs/adr/`](docs/adr/): 4 quyết định kiến trúc đã chốt kèm lý do và đánh đổi.
+- [`docs/adr/`](docs/adr/): 8 quyết định kiến trúc đã chốt kèm lý do và đánh đổi.
 
 Nếu thay đổi của bạn đi ngược một ADR, nói thẳng ra thay vì lặng lẽ ghi đè.
 
