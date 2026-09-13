@@ -3,4 +3,4 @@
 `__version__` là nguồn version duy nhất; hatch đọc ngược ra `project.version`.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

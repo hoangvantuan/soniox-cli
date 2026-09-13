@@ -7,10 +7,11 @@ description: >-
   "chuyển ghi âm thành chữ"); tách người nói (diarization); dịch nội dung audio
   sang ngôn ngữ khác; sinh giọng nói / đọc văn bản thành tiếng ("text to speech",
   "TTS", "đọc thành giọng nói", "tạo file audio từ text"); clone giọng nói
-  (voice cloning); hoặc khi nhắc thẳng "soniox". Nhận FILE audio local hoặc URL
-  tải trực tiếp file audio, khác với các skill chỉ lấy phụ đề có sẵn của một nền
-  tảng. KHÔNG tải được từ YouTube / Drive / trang web: tải file về trước đã.
-  KHÔNG dùng cho realtime streaming micro.
+  (voice cloning); hoặc khi nhắc thẳng "soniox". Nhận FILE audio HOẶC VIDEO
+  local (tự tách audio trước khi upload) và URL tải trực tiếp file audio, khác
+  với các skill chỉ lấy phụ đề có sẵn của một nền tảng. KHÔNG tải được từ
+  YouTube / Drive / trang web: tải file về trước đã. KHÔNG dùng cho realtime
+  streaming micro.
 ---
 
 # Soniox CLI
@@ -42,11 +43,50 @@ soniox auth check
 
 Thêm `--json` vào bất kỳ lệnh nào để lấy JSON đầy đủ (token-level: timestamp, speaker, confidence, language).
 
+## Video: đưa thẳng vào, đừng tự convert
+
+```bash
+soniox stt transcribe hop.mp4     # tự tách audio, tự dọn file tạm
+```
+
+CLI phát hiện luồng hình bằng `ffprobe`, tách audio ra thư mục tạm (copy nguyên luồng, không mã hóa lại nên không mất chất lượng), upload phần audio, rồi **xóa file tạm trong `finally`**. Chỉ upload phần cần thiết:
+
+```
+tách audio khỏi video (aac) trước khi upload...
+upload 55 KB thay vì 224 KB (hop.m4a)
+```
+
+**Đừng tự chạy `ffmpeg` rồi tự dọn.** CLI đã làm, và bước dọn dẹp thủ công là bước hay bị bỏ sót nhất khi có lỗi giữa chừng.
+
+- Thiếu `ffmpeg` thì CLI báo kèm cách cài. Không có ffmpeg mà vẫn muốn chạy: `--no-extract-audio` (upload nguyên video, Soniox vẫn nhận `mp4`/`webm`, chỉ tốn băng thông).
+- Cần giữ lại file audio đã tách: `--keep-extracted`, CLI in đường dẫn và **không** tự xóa. Xóa tay sau khi dùng xong.
+- Đuôi audio quen thuộc (`.mp3`, `.wav`, `.m4a`, ...) đi thẳng, không đụng tới ffmpeg.
+
+## Tiết kiệm context: audio dài thì ghi ra file
+
+Mặc định kết quả in ra **stdout**, tiện khi clip ngắn. Với bản ghi dài, đổ cả transcript vào context là lãng phí: dùng `-o` rồi đọc phần cần.
+
+```bash
+soniox stt transcribe hop-2-tieng.mp4 -o /tmp/hop.txt
+wc -l /tmp/hop.txt && head -40 /tmp/hop.txt     # xem trước rồi mới quyết
+grep -n "ngân sách" /tmp/hop.txt                # tìm thẳng thứ cần
+```
+
+`-o` dùng được cho cả text thuần lẫn `--subtitles`, và CLI tự tạo thư mục cha. Nếu quên `-o` mà kết quả dài hơn 20.000 ký tự, CLI nhắc một dòng ở stderr.
+
+**Quy tắc**: audio dài hơn khoảng 10 phút, hoặc chỉ cần tóm tắt / trích một đoạn, thì ghi ra file trước. Đặt file tạm vào `/tmp` và xóa sau khi xong.
+
 ## Ví dụ hay dùng
 
 ```bash
 # Phiên âm file local, lấy text (tự xóa khỏi Soniox sau khi xong)
 soniox stt transcribe ghiam.mp3
+
+# Video: đưa thẳng, CLI tách audio rồi dọn file tạm
+soniox stt transcribe hop.mp4 --diarize
+
+# Bản ghi dài: ghi ra file, rồi đọc phần cần thay vì đổ hết vào context
+soniox stt transcribe hop-dai.mp4 -o /tmp/hop.txt && head -40 /tmp/hop.txt
 
 # Tách người nói + gợi ý ngôn ngữ (kết quả in theo "Speaker 1: ...")
 soniox stt transcribe hop.mp3 --diarize --language-hints vi,en
@@ -85,7 +125,7 @@ soniox concurrency                      # phiên đồng thời và giới hạn
 ## Lưu ý quan trọng
 
 - **Auto-destroy**: `transcribe` mặc định xóa file + transcription khỏi Soniox sau khi lấy text (tránh đầy quota). Dùng `--keep` nếu cần `get`/`transcript` lại sau. Hết `--timeout` (mặc định 600s) thì CLI in id kèm lệnh để lấy kết quả hoặc dọn tay.
-- **Đầu vào STT**: file local, `--file-id`, hoặc URL **tải trực tiếp file audio**. Link YouTube/Drive/trang web sẽ hỏng (Soniox nhận về HTML, báo "Invalid audio file") — tải file về trước rồi đưa đường dẫn local. Không truyền đồng thời `--file-id` và file/URL.
+- **Đầu vào STT**: file audio hoặc video local, `--file-id`, hoặc URL **tải trực tiếp file audio**. Video chỉ tách được khi là file local; URL thì Soniox tải phía nó, muốn tách phải tải về trước. Link YouTube/Drive/trang web sẽ hỏng (Soniox nhận về HTML, báo "Invalid audio file") — tải file về trước rồi đưa đường dẫn local. Không truyền đồng thời `--file-id` và file/URL.
 - **Phụ đề**: `--subtitles srt|vtt`, thêm `-o <file>` để ghi ra file. `--subtitle-track` chọn `auto` (mặc định, có dịch thì lấy bản dịch), `original`, `translation`, hay `both` (song ngữ). Không dùng chung với `--no-wait`.
 - **File dài**: mặc định chờ tối đa 600s. Dài hơn thì tăng `--timeout`, hoặc `--no-wait` rồi poll bằng `stt transcript <id>`. Hết giờ CLI in sẵn id kèm lệnh lấy lại kết quả.
 - **TTS**: bắt buộc `-o <file>`; định dạng suy từ đuôi (`.wav`, `.mp3`, `.flac`, `.opus`, `.aac`, `.pcm`). Đuôi lạ sẽ báo lỗi, ép bằng `--format`. `--speed` 0.7 đến 1.3.

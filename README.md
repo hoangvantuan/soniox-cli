@@ -39,7 +39,7 @@ Gỡ: `uv tool uninstall soniox-cli`
 
 | Lệnh | Việc |
 |---|---|
-| `soniox stt transcribe <file\|url>` | Phiên âm; mặc định **chờ xong + tự dọn** file/transcription trên Soniox |
+| `soniox stt transcribe <file\|url>` | Phiên âm; **video được tách audio trước khi upload**; mặc định **chờ xong + tự dọn** file/transcription trên Soniox |
 | `soniox stt transcribe <x> --subtitles srt` | Xuất **phụ đề SRT / VTT** |
 | `soniox stt get\|list\|transcript\|count\|delete\|delete-all` | Quản lý transcription |
 | `soniox files upload\|list\|get\|count\|delete\|delete-all` | File audio đã upload |
@@ -91,6 +91,33 @@ soniox usage                              # chi phí 24h gần nhất, gộp the
 soniox concurrency                        # phiên đồng thời và giới hạn
 ```
 
+## Video
+
+Đưa thẳng file video vào, CLI tách audio trước khi upload:
+
+```bash
+soniox stt transcribe hop.mp4
+# tách audio khỏi video (aac) trước khi upload...
+# upload 55 KB thay vì 224 KB (hop.m4a)
+```
+
+Soniox nhận cả `mp4` / `webm`, nên upload nguyên video vẫn chạy; tách audio chỉ để khỏi trả băng thông cho luồng hình mà STT không dùng. Cơ chế:
+
+- Đuôi audio quen thuộc đi thẳng, **không gọi ffmpeg**.
+- Còn lại thì `ffprobe` kiểm tra có luồng hình thật không (ảnh bìa `mjpeg` không tính).
+- Tách bằng **copy nguyên luồng**, không mã hóa lại, nên không mất chất lượng. Codec lạ (`ac3`, `dts`, ...) mới chuyển sang AAC.
+- File tạm nằm trong thư mục tạm hệ thống và **bị xóa trong `finally`**, kể cả khi lỗi giữa chừng.
+
+`--no-extract-audio` upload nguyên file. `--keep-extracted` giữ file tách lại và in đường dẫn (CLI không tự xóa). Chi tiết và đánh đổi: [ADR-0006](docs/adr/0006-tach-audio-khoi-video-truoc-khi-upload.md).
+
+Cần `ffmpeg` **chỉ khi** đầu vào là video. macOS: `brew install ffmpeg`.
+
+## Đường ra: stdout hay file
+
+Mặc định mọi kết quả in ra **stdout**, không tạo file nào. `-o <file>` ghi thẳng ra file (tự tạo thư mục cha), dùng được cho cả text thuần lẫn `--subtitles`. Riêng `tts generate` thì `-o` là bắt buộc vì đầu ra là nhị phân.
+
+Với bản ghi dài, nên dùng `-o` rồi đọc phần cần thay vì đổ hết ra màn hình. Quên `-o` mà kết quả dài hơn 20.000 ký tự thì CLI nhắc một dòng ở stderr (stderr nên không ảnh hưởng `|` và `>`).
+
 ## Phụ đề
 
 `--subtitles srt|vtt` có ở cả `stt transcribe` và `stt transcript`. Token của Soniox nhỏ hơn từ nên CLI gom lại thành **cue**, cắt khi đổi người nói, quá `--subtitle-max-chars` (mặc định 84), quá 6 giây, im lặng quá 0.7 giây, hoặc hết câu.
@@ -126,6 +153,7 @@ Soniox trả token bản dịch **không kèm mốc thời gian**; CLI mượn k
 
 - STT / Files / models / tts-models dùng thẳng `soniox` SDK.
 - **Phụ đề** nằm trong `src/soniox_cli/subtitles.py`, thuần logic và không chạm mạng, nên test được đầy đủ.
+- **Chuẩn bị file upload** nằm trong `src/soniox_cli/media.py`, gọi `ffmpeg`/`ffprobe` qua `subprocess`; test thay `subprocess` nên không cần ffmpeg để chạy.
 - **TTS generate**, **voices** và **usage-logs** gọi raw `client.request()`. Lý do đã kiểm chứng trên chính bản 2.3.2: SDK khi đó chưa có `client.voices`, chưa có `client.usage_logs`, và `CreateTtsPayload` chưa có `speed`. Raw request chạy đúng trên cả dải `>=2.3.2,<3`. Từ 2.8.0 SDK đã có sẵn cả ba; chuyển sang API SDK là việc làm sau, kèm nâng sàn phụ thuộc.
 - Phụ thuộc chặn major (`<3`) vì code bám vào nội bộ SDK (`client.request`, `client.tts_api_base_url`).
 

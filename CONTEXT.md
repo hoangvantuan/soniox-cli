@@ -22,6 +22,7 @@ CLI **không giữ state**. Mọi thứ bền vững đều nằm trên Soniox; 
 | **diarization** | Tách người nói. Bật bằng `--diarize`, kết quả hiện ở trường `speaker` của token. |
 | **translation** | Dịch nội dung audio. `one_way` (sang một ngôn ngữ đích) hoặc `two_way` (giữa hai ngôn ngữ). Token được gắn `translation_status` là `original` hoặc `translation`. |
 | **language hints** | Gợi ý ngôn ngữ cho STT, không phải ràng buộc cứng. |
+| **tách audio** | Bỏ luồng hình khỏi file video trước khi upload, bằng cách copy nguyên luồng audio. Không phải "convert", không mã hóa lại. |
 | **cue** | Một khối phụ đề: khoảng thời gian cộng đoạn text hiện lên màn hình. Token Soniox nhỏ hơn từ nên phải gom lại thành cue. |
 | **track** | Luồng token dùng cho phụ đề: `original`, `translation`, `both`, hay `auto` (có dịch thì lấy dịch). |
 | **escape hatch** | `--config-json`: đường truyền thẳng tham số mà CLI chưa có cờ riêng. Xem [ADR-0004](docs/adr/0004-loc-config-json-bat-doi-xung.md). |

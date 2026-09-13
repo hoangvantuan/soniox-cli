@@ -13,11 +13,12 @@ import argparse
 import json
 import os
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import __version__, subtitles
+from . import __version__, media, subtitles
 
 STT_DEFAULT_MODEL = "stt-async-v5"
 TTS_DEFAULT_MODEL = "tts-rt-v1"
@@ -102,10 +103,20 @@ def emit(args, data: Any, human) -> None:
     print(text)
 
 
+# Dài hơn mức này mà không có -o thì nhắc một dòng ra stderr. Với agent, đổ cả
+# transcript vào context tốn hơn nhiều so với ghi ra file rồi đọc phần cần.
+BIG_OUTPUT_CHARS = 20_000
+
+
 def write_out(args, text: str) -> None:
     """In ra stdout, hoặc ghi ra file nếu có -o."""
     out = getattr(args, "output", None)
     if not out:
+        if len(text) > BIG_OUTPUT_CHARS:
+            eprint(
+                f"gợi ý: kết quả dài {len(text):,} ký tự. Lần sau thêm "
+                f"-o <file> để ghi thẳng ra file thay vì đổ hết ra stdout."
+            )
         print(text)
         return
     path = Path(out).expanduser()
@@ -136,6 +147,8 @@ def run(fn, args) -> None:
         die(f"lỗi Soniox: {e}{suffix}")
     except TimeoutError as e:
         die(str(e) or "hết thời gian chờ")
+    except media.MediaError as e:
+        die(str(e))
     except httpx.HTTPError as e:
         die(f"lỗi kết nối tới Soniox: {type(e).__name__}: {e}")
     except KeyboardInterrupt:
@@ -315,6 +328,25 @@ def _format_translation(tokens, with_speaker: bool) -> str:
 # --------------------------------------------------------------------------- #
 # Lệnh STT
 # --------------------------------------------------------------------------- #
+@contextmanager
+def _upload_ready(args, src: dict):
+    """Tách audio khỏi video trước khi upload; không phải file local thì để yên.
+
+    File tạm nằm trong thư mục tạm của hệ thống và bị xóa khi ra khỏi khối này.
+    """
+    path = src.get("file")
+    if not path:
+        yield src
+        return
+    with media.prepared_upload(
+        Path(path),
+        extract=not args.no_extract_audio,
+        keep=args.keep_extracted,
+        log=eprint,
+    ) as ready:
+        yield {**src, "file": str(ready)}
+
+
 def _try_destroy(client, transcription_id: str, quiet: bool = False) -> None:
     """Dọn transcription + file đính kèm. Nuốt lỗi: đây là bước dọn, không phải kết quả."""
     try:
@@ -340,7 +372,8 @@ def cmd_stt_transcribe(args) -> None:
         die("--subtitles cần transcript nên không dùng chung với --no-wait; "
             "poll xong rồi chạy: soniox stt transcript <id> --subtitles " + args.subtitles)
 
-    tr = client.stt.transcribe(model=model, config=cfg, **src)
+    with _upload_ready(args, src) as src:
+        tr = client.stt.transcribe(model=model, config=cfg, **src)
 
     if args.no_wait:
         emit(
@@ -496,7 +529,10 @@ def cmd_files_upload(args) -> None:
     p = Path(args.path).expanduser()
     if not p.is_file():
         die(f"không thấy file: {args.path}")
-    f = client.files.upload(str(p))
+    with media.prepared_upload(
+        p, extract=not args.no_extract_audio, keep=args.keep_extracted, log=eprint
+    ) as ready:
+        f = client.files.upload(str(ready))
     emit(
         args,
         f,
@@ -874,6 +910,19 @@ def _add_json_flag(p: argparse.ArgumentParser, *, top: bool = False) -> None:
     p.add_argument("--json", action="store_true", help="in JSON đầy đủ thay vì text", **kwargs)
 
 
+def _add_upload_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--no-extract-audio",
+        action="store_true",
+        help="upload nguyên file thay vì tách audio khỏi video trước",
+    )
+    p.add_argument(
+        "--keep-extracted",
+        action="store_true",
+        help="giữ lại file audio đã tách trong thư mục tạm và in đường dẫn",
+    )
+
+
 def _add_subtitle_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--subtitles",
@@ -924,6 +973,7 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--no-wait", action="store_true", help="không chờ; trả về id để poll sau")
     tr.add_argument("--keep", action="store_true", help="không tự xóa transcription/file sau khi xong")
     tr.add_argument("--timeout", type=float, default=600.0, help="giới hạn chờ (giây), mặc định 600")
+    _add_upload_flags(tr)
     _add_subtitle_flags(tr)
     _add_json_flag(tr)
     tr.set_defaults(func=cmd_stt_transcribe)
@@ -971,8 +1021,9 @@ def build_parser() -> argparse.ArgumentParser:
     files = sub.add_parser("files", help="quản lý file audio đã upload")
     files_sub = files.add_subparsers(dest="action", required=True)
 
-    up = files_sub.add_parser("upload", help="upload file audio")
+    up = files_sub.add_parser("upload", help="upload file audio (video sẽ được tách audio trước)")
     up.add_argument("path")
+    _add_upload_flags(up)
     _add_json_flag(up)
     up.set_defaults(func=cmd_files_upload)
 
