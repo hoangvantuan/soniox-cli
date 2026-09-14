@@ -205,7 +205,24 @@ uv build                       # sdist + wheel
 
 ## Skill cho agent
 
-[`skills/soniox/SKILL.md`](skills/soniox/SKILL.md) là Claude Code skill bọc CLI này. Chép vào `~/.claude/skills/soniox/` để dùng.
+[`skills/soniox/SKILL.md`](skills/soniox/SKILL.md) là agent skill bọc CLI này. Cài bằng [`skills`](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add hoangvantuan/soniox-cli          # chọn agent và phạm vi khi được hỏi
+npx skills add hoangvantuan/soniox-cli -g -a claude-code -y   # không hỏi: global, Claude Code
+npx skills update soniox                        # kéo bản mới về sau này
+```
+
+Mặc định nó symlink từ thư mục của từng agent về một bản gốc duy nhất, nên không có chuyện mỗi agent giữ một bản khác nhau. **Đừng chép tay** đè lên bản đó: lockfile (`~/.agents/.skill-lock.json`) sẽ lệch với nội dung trên đĩa, và `skills update` lần sau sẽ kéo bản trên GitHub về đè lại.
+
+Sửa skill thì thử tại chỗ bằng đường dẫn local trước khi push:
+
+```bash
+npx skills add . --list      # xem repo này expose những skill nào
+npx skills add . --skill soniox
+```
+
+Skill và CLI phải đi cùng nhau: skill mô tả cờ nào thì bản `soniox` đang cài phải có cờ đó. Nếu skill nói về một cờ mà CLI báo `unrecognized arguments`, chạy `soniox update`.
 
 ## License
 
