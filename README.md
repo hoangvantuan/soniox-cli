@@ -174,7 +174,9 @@ Soniox trả token bản dịch **không kèm mốc thời gian**; CLI mượn k
 
 - **`transcribe` mặc định tự dọn** (`destroy`) file + transcription sau khi lấy transcript, tránh đầy quota Soniox. Dùng `--keep` để giữ lại (khi cần `get`/`transcript` sau).
   - Id được in ra stderr **ngay khi transcription vừa tạo**, trước cả lúc bắt đầu chờ. Mất kết nối, mất tiến trình, đóng máy: vẫn còn chỗ bám để lấy lại kết quả.
+  - **Trong lúc chờ, cứ khoảng 30 giây CLI in một dòng stderr**: id, thời gian đã trôi qua, `status` hiện tại. Đây là tín hiệu sống để phân biệt "đang chạy" với "đã treo", không phải thanh tiến độ: Soniox không trả phần trăm hoàn thành. Nhịp bám theo vòng poll nên giãn ra được khi một lần hỏi bị treo hoặc khi đang thử lại sau lỗi mạng; lúc đó chính dòng cảnh báo thử lại là tín hiệu sống.
   - Hết `--timeout` (mặc định 600s): CLI in ra id kèm lệnh để lấy kết quả hoặc dọn thủ công.
+  - Mất kết nối giữa lúc chờ: CLI thử lại tối đa 5 lần (nghỉ 5/10/20/40/60 giây) rồi mới bỏ cuộc, và khi bỏ cuộc vẫn in id ra. Mạng hỏng ở máy bạn không nói gì về job trên Soniox. Xem [ADR-0009](docs/adr/0009-cli-tu-nuoi-vong-lap-cho.md).
   - Ctrl-C hoặc `SIGTERM` giữa chừng: CLI dọn file tạm cục bộ rồi in id, **không xóa job trên Soniox**. Hủy chờ không phải hủy job. Xem [ADR-0008](docs/adr/0008-tin-hieu-huy-khong-xoa-du-lieu-tu-xa.md).
   - `--ref <nhãn>` gắn nhãn tự đặt cho cả file lẫn transcription, để tìm lại bằng `stt list` khi mất sạch ngữ cảnh.
 - **Người nói và bản dịch tự hiện ra.** Cả `transcribe` lẫn `transcript` đều gắn nhãn `Speaker N:` khi token có speaker, và xen kẽ bản dịch khi có. `--flat` tắt nhãn Speaker (bản dịch vẫn giữ). `--group-speakers` là cờ cũ, nay không còn tác dụng, giữ lại cho tương thích.

@@ -14,6 +14,7 @@ import json
 import os
 import signal
 import sys
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,12 @@ from typing import Any, NoReturn
 from . import __version__, media, subtitles, update
 
 STT_DEFAULT_MODEL = "stt-async-v5"
+
+# Vòng lặp chờ của `stt transcribe`. Xem ADR-0009.
+POLL_INTERVAL_SEC = 5.0       # bằng mặc định của `client.stt.wait`
+HEARTBEAT_SEC = 30.0          # nhịp báo sống ra stderr
+POLL_RETRY_BACKOFF = (5.0, 10.0, 20.0, 40.0, 60.0)   # nghỉ bao lâu giữa các lần thử lại
+POLL_RETRY_MAX = len(POLL_RETRY_BACKOFF)             # suy ra, đừng ghi số lần ở hai nơi
 TTS_DEFAULT_MODEL = "tts-rt-v1"
 TTS_DEFAULT_VOICE = "Adrian"
 TTS_SPEED_MIN, TTS_SPEED_MAX = 0.7, 1.3
@@ -361,6 +368,100 @@ def _recovery_hint(transcription_id: str) -> str:
     )
 
 
+def _fmt_elapsed(sec: float) -> str:
+    """`95.0` -> `1m35s`. Giây trần cho dễ đọc, không cần độ chính xác dưới giây.
+
+    Không dùng chung với `_fmt_duration`: hàm kia nhận mili giây và bỏ hẳn phần
+    giây khi đã sang giờ, vì nó phải vừa một cột bảng của `stt list`.
+    """
+    minutes, seconds = divmod(int(sec), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+def wait_for_transcription(
+    client,
+    transcription_id: str,
+    *,
+    timeout_sec: float,
+    log=eprint,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+):
+    """Chờ transcription xong, cứ `HEARTBEAT_SEC` giây lại báo sống ra stderr một lần.
+
+    Viết tay thay vì gọi `client.stt.wait` vì `wait` không nhận callback: không có
+    chỗ nào cắm được nhịp báo sống vào. Đổi lại CLI phải tự nuôi deadline, khoảng
+    nghỉ và lỗi mạng giữa chừng. Xem ADR-0009.
+
+    `sleep` và `monotonic` tiêm được để test chờ hàng phút mà chạy tức thì.
+
+    Raises:
+        TimeoutError: quá `timeout_sec` mà job vẫn chưa rời `queued`/`processing`.
+        httpx.TransportError: mạng hỏng liên tiếp quá `POLL_RETRY_MAX` lần.
+        SonioxError: API trả lời lỗi. Không thử lại: API đã phán quyết thì tin nó.
+    """
+    import httpx
+
+    start = monotonic()
+    deadline = start + timeout_sec
+    next_beat = HEARTBEAT_SEC
+    # Transcription vừa tạo luôn nằm ở `queued`; chỉ dùng cho heartbeat sớm khi
+    # lần hỏi đầu tiên còn chưa thành công.
+    status = "queued"
+    fails = 0
+    last_error: Exception | None = None
+
+    while True:
+        try:
+            tr = client.stt.get(transcription_id)
+        except httpx.TransportError as e:
+            # Mạng chập chờn, không phải câu trả lời của API: job trên Soniox vẫn
+            # chạy, bỏ cuộc ngay là vứt đi thứ còn cứu được.
+            fails += 1
+            last_error = e
+            if fails > POLL_RETRY_MAX:
+                raise
+            step = POLL_RETRY_BACKOFF[min(fails, len(POLL_RETRY_BACKOFF)) - 1]
+        else:
+            fails = 0
+            last_error = None
+            status = tr.status
+            if status not in ("queued", "processing"):
+                return tr
+            step = POLL_INTERVAL_SEC
+
+        elapsed = monotonic() - start
+        if elapsed >= next_beat:
+            # Nhảy thẳng tới mốc kế tiếp thay vì cộng dồn: một lần `get` chậm
+            # không được đẻ ra ba dòng bù.
+            while next_beat <= elapsed:
+                next_beat += HEARTBEAT_SEC
+            log(f"đang chờ {transcription_id}: {_fmt_elapsed(elapsed)}; status: {status}")
+
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            if last_error is not None:
+                # Hết giờ trong lúc mạng đang hỏng: nói đúng nguyên nhân, đừng
+                # khuyên người dùng tăng --timeout.
+                raise last_error
+            raise TimeoutError(f"hết thời gian chờ transcription {transcription_id}")
+
+        nap = min(step, remaining)
+        if last_error is not None:
+            # Báo sau khi đã cắt theo hạn còn lại, để con số hứa ra là con số thật.
+            log(
+                f"cảnh báo: không hỏi được Soniox "
+                f"({type(last_error).__name__}: {last_error}); "
+                f"thử lại sau {_fmt_elapsed(nap)} (lần {fails}/{POLL_RETRY_MAX})"
+            )
+        sleep(nap)
+
+
 def _try_destroy(client, transcription_id: str, quiet: bool = False) -> None:
     """Dọn transcription + file đính kèm. Nuốt lỗi: đây là bước dọn, không phải kết quả."""
     try:
@@ -373,9 +474,12 @@ def _try_destroy(client, transcription_id: str, quiet: bool = False) -> None:
 def cmd_stt_transcribe(args) -> None:
     """Tạo transcription rồi (mặc định) chờ xong, in text và dọn khỏi Soniox.
 
-    Tự chờ thay vì dùng `transcribe_and_wait_with_tokens` để luôn nắm được id:
+    Tự tạo thay vì dùng `transcribe_and_wait_with_tokens` để luôn nắm được id:
     khi hết giờ hoặc người dùng Ctrl-C, còn chỗ bám để dọn hoặc lấy lại kết quả,
     thay vì bỏ mồ côi dữ liệu trên Soniox.
+
+    Tự chờ bằng `wait_for_transcription` thay vì `client.stt.wait` để có nhịp báo
+    sống ra stderr: `wait` không nhận callback. Xem ADR-0009.
     """
     client = get_client()
     src = resolve_audio_input(args)
@@ -408,19 +512,38 @@ def cmd_stt_transcribe(args) -> None:
         )
         return
 
+    import httpx
+
     try:
-        tr = client.stt.wait(tr.id, timeout_sec=args.timeout)
+        tr = wait_for_transcription(client, tr.id, timeout_sec=args.timeout)
     except TimeoutError:
         die(
             f"hết thời gian chờ ({args.timeout}s); transcription {tr.id} vẫn đang chạy.\n"
             f"{_recovery_hint(tr.id)}\n"
             f"  (hoặc tăng --timeout, hoặc dùng --no-wait ngay từ đầu)"
         )
+    except httpx.HTTPError as e:
+        # Đường bỏ cuộc mới do CLI tự nuôi vòng lặp chờ. Nó cũng phải để lại id:
+        # mạng hỏng ở đây không nói gì về job trên Soniox. Xem ADR-0008.
+        die(
+            f"mất kết nối tới Soniox khi đang chờ ({type(e).__name__}: {e}); "
+            f"transcription {tr.id} vẫn đang chạy trên Soniox.\n"
+            f"{_recovery_hint(tr.id)}"
+        )
     except KeyboardInterrupt:
         # Cố ý không dọn: Ctrl-C nghĩa là thôi đứng chờ, không phải vứt dữ liệu.
         # Xem ADR-0008.
         eprint(
             f"đã thôi chờ; transcription {tr.id} vẫn đang chạy trên Soniox.\n"
+            f"{_recovery_hint(tr.id)}"
+        )
+        raise
+    except BaseException:
+        # Lưới chắn cho mọi đường bỏ cuộc còn lại: SIGTERM (đã thành SystemExit),
+        # lỗi API giữa lúc chờ, bug chưa lường. Tất cả đều phải để lại id kèm lệnh
+        # cứu trước khi đi tiếp; đừng thêm nhánh mới mà quên dòng này. Xem ADR-0008.
+        eprint(
+            f"dừng chờ giữa chừng; transcription {tr.id} có thể vẫn còn trên Soniox.\n"
             f"{_recovery_hint(tr.id)}"
         )
         raise

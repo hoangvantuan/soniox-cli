@@ -80,6 +80,8 @@ Running in the background is **not** the same as being durable: a backgrounded p
 
 The id is also printed to **stderr** the moment the transcription is created, on every path, so a captured log is a second way back in.
 
+While `transcribe` waits, the CLI also prints a heartbeat line to stderr roughly every 30 seconds (`đang chờ <id>: 1m30s; status: processing`), plus a warning line each time a poll fails and is retried. Those are liveness signals, not failures: judge a run by its **exit code**, never by stderr being non-empty.
+
 ## Recovery: the job almost certainly survived
 
 A dead local process does not kill the job. Get it back:
@@ -180,7 +182,7 @@ soniox concurrency                      # concurrent sessions and limits, to dia
 - **Long files**: timeout is rarely the problem, **process lifetime is**. Soniox is fast (one measurement, 2026-09-13: 2h40m of audio finished in under 5 minutes, so the 600s default was never close to being hit); the local time goes into extracting and uploading. What actually kills a run is the local process dying. See "Waiting" above.
 - **TTS**: `-o <file>` is required; the format is inferred from the extension (`.wav`, `.mp3`, `.flac`, `.opus`, `.aac`, `.pcm`). An unknown extension is an error, force it with `--format`. `--speed` ranges from 0.7 to 1.3.
 - **Rare parameters**: `--config-json '{...}'` for both STT and TTS. A wrong field name errors out with the list of valid ones.
-- **Errors**: go to stderr with a non-zero exit code. Read the message (it carries a `request_id`) to diagnose.
+- **Errors**: go to stderr with a non-zero exit code. Read the message (it carries a `request_id`) to diagnose. stderr also carries non-error lines (the transcription id, the waiting heartbeat, retry warnings), so a non-empty stderr on its own means nothing.
 
 ## When details go beyond the CLI
 

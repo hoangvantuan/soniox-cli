@@ -580,7 +580,8 @@ def test_transcript_destroy_don_ca_file(monkeypatch, capsys):
 # --------------------------------------------------------------------------- #
 # Vòng đời tiến trình: id phải ra ngoài ngay, tín hiệu hủy không xóa dữ liệu xa
 # --------------------------------------------------------------------------- #
-def _transcribe_env(monkeypatch, *, wait, destroyed, created=None):
+def _transcribe_env(monkeypatch, *, poll, destroyed, created=None):
+    """`poll` là kết quả một lượt hỏi Soniox: CLI tự nuôi vòng lặp nên nó gọi `get`."""
     import soniox_cli.cli as cli
 
     class FakeStt:
@@ -589,8 +590,8 @@ def _transcribe_env(monkeypatch, *, wait, destroyed, created=None):
                 created.append(kw)
             return SimpleNamespace(id="TR1", status="queued")
 
-        def wait(self, _id, timeout_sec=None):
-            return wait()
+        def get(self, _id):
+            return poll()
 
         def get_transcript(self, _id):
             return SimpleNamespace(text="xong", tokens=[])
@@ -613,7 +614,7 @@ def test_transcribe_in_id_ngay_tren_duong_hanh_phuc(monkeypatch, tmp_path, capsy
     destroyed: list[str] = []
     cli = _transcribe_env(
         monkeypatch,
-        wait=lambda: SimpleNamespace(id="TR1", status="completed"),
+        poll=lambda: SimpleNamespace(id="TR1", status="completed"),
         destroyed=destroyed,
     )
     cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
@@ -622,7 +623,7 @@ def test_transcribe_in_id_ngay_tren_duong_hanh_phuc(monkeypatch, tmp_path, capsy
 
 def test_transcribe_in_id_ca_khi_no_wait(monkeypatch, tmp_path, capsys):
     """--no-wait in id ra stdout cho máy đọc; stderr vẫn phải có cho người/log."""
-    cli = _transcribe_env(monkeypatch, wait=lambda: None, destroyed=[])
+    cli = _transcribe_env(monkeypatch, poll=lambda: None, destroyed=[])
     cli.cmd_stt_transcribe(_transcribe_args(tmp_path, "--no-wait"))
     cap = capsys.readouterr()
     assert "TR1" in cap.err
@@ -637,7 +638,7 @@ def test_flat_co_tac_dung_tren_ca_transcribe(monkeypatch, tmp_path, capsys):
         def transcribe(self, **kw):
             return SimpleNamespace(id="TR1", status="queued")
 
-        def wait(self, _id, timeout_sec=None):
+        def get(self, _id):
             return SimpleNamespace(id="TR1", status="completed")
 
         def get_transcript(self, _id):
@@ -663,31 +664,48 @@ def test_ctrl_c_khong_xoa_job_tren_soniox(monkeypatch, tmp_path, capsys):
     def boom():
         raise KeyboardInterrupt
 
-    cli = _transcribe_env(monkeypatch, wait=boom, destroyed=destroyed)
+    cli = _transcribe_env(monkeypatch, poll=boom, destroyed=destroyed)
     with pytest.raises(KeyboardInterrupt):
         cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
     assert destroyed == []
     assert "TR1" in capsys.readouterr().err
 
 
-def test_systemexit_khong_kich_hoat_don_dep_tu_xa(monkeypatch, tmp_path):
+def test_systemexit_khong_kich_hoat_don_dep_tu_xa(monkeypatch, tmp_path, capsys):
     """SIGTERM biến thành SystemExit; nó không được chạm vào job trên Soniox."""
     destroyed: list[str] = []
 
     def boom():
         raise SystemExit(143)
 
-    cli = _transcribe_env(monkeypatch, wait=boom, destroyed=destroyed)
+    cli = _transcribe_env(monkeypatch, poll=boom, destroyed=destroyed)
     with pytest.raises(SystemExit):
         cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
     assert destroyed == []
+    assert "stt transcript TR1" in capsys.readouterr().err
+
+
+def test_loi_api_giua_luc_cho_cung_de_lai_id(monkeypatch, tmp_path, capsys):
+    """Lỗi API không được thử lại, nhưng nó vẫn là một đường bỏ cuộc: id phải ra."""
+    from soniox.errors import SonioxError
+
+    destroyed: list[str] = []
+
+    def boom():
+        raise SonioxError("API sập")
+
+    cli = _transcribe_env(monkeypatch, poll=boom, destroyed=destroyed)
+    with pytest.raises(SonioxError):
+        cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
+    assert destroyed == []
+    assert "stt transcript TR1" in capsys.readouterr().err
 
 
 def test_ref_duoc_gui_len_soniox(monkeypatch, tmp_path, capsys):
     created: list[dict] = []
     cli = _transcribe_env(
         monkeypatch,
-        wait=lambda: SimpleNamespace(id="TR1", status="completed"),
+        poll=lambda: SimpleNamespace(id="TR1", status="completed"),
         destroyed=[],
         created=created,
     )
@@ -700,13 +718,166 @@ def test_khong_co_ref_thi_khong_tu_bia(monkeypatch, tmp_path, capsys):
     created: list[dict] = []
     cli = _transcribe_env(
         monkeypatch,
-        wait=lambda: SimpleNamespace(id="TR1", status="completed"),
+        poll=lambda: SimpleNamespace(id="TR1", status="completed"),
         destroyed=[],
         created=created,
     )
     cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
     capsys.readouterr()
     assert created[0]["client_reference_id"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Vòng lặp chờ: heartbeat, deadline, lỗi mạng giữa chừng (ADR-0009)
+# --------------------------------------------------------------------------- #
+class _Clock:
+    """Đồng hồ giả: `sleep` đẩy `monotonic` tới, nên test chờ hàng phút vẫn chạy tức thì."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, sec: float) -> None:
+        self.now += sec
+
+
+def _poller(*results):
+    """Client giả cho `stt.get`: trả lần lượt từng phần tử, phần tử cuối lặp mãi.
+
+    Exception thì raise, chuỗi thì coi là `status`.
+    """
+    seq = list(results)
+    calls: list[str] = []
+
+    def get(tid):
+        calls.append(tid)
+        item = seq.pop(0) if len(seq) > 1 else seq[0]
+        if isinstance(item, Exception):
+            raise item
+        return SimpleNamespace(id=tid, status=item)
+
+    return SimpleNamespace(stt=SimpleNamespace(get=get)), calls
+
+
+def _wait(client, logs, clock, **kw):
+    import soniox_cli.cli as cli
+
+    return cli.wait_for_transcription(
+        client, "TR1", log=logs.append, sleep=clock.sleep, monotonic=clock.monotonic, **kw
+    )
+
+
+def test_heartbeat_moi_30s_kem_thoi_gian_da_troi_qua_va_status():
+    """Tín hiệu sống: phân biệt 'đang chạy bình thường' với 'đã treo'."""
+    clock, logs = _Clock(), []
+    client, calls = _poller(*(["processing"] * 13), "completed")
+    tr = _wait(client, logs, clock, timeout_sec=600.0)
+    assert tr.status == "completed"
+    assert len(logs) == 2
+    assert "30s" in logs[0] and "processing" in logs[0] and "TR1" in logs[0]
+    assert "1m00s" in logs[1]
+    assert len(calls) == 14
+
+
+def test_heartbeat_mac_dinh_di_ra_stderr(capsys):
+    """`log` mặc định là `eprint`: đừng để chỉ test được khi có tiêm."""
+    import soniox_cli.cli as cli
+
+    clock = _Clock()
+    client, _ = _poller(*(["processing"] * 7), "completed")
+    cli.wait_for_transcription(
+        client, "TR1", timeout_sec=600.0, sleep=clock.sleep, monotonic=clock.monotonic
+    )
+    cap = capsys.readouterr()
+    assert "TR1" in cap.err and "status: processing" in cap.err
+    assert cap.out == ""
+
+
+def test_khong_heartbeat_khi_xong_truoc_moc_dau_tien():
+    """Job nhanh thì im lặng: heartbeat là để phá im lặng dài, không phải để ồn."""
+    clock, logs = _Clock(), []
+    client, _ = _poller("processing", "completed")
+    assert _wait(client, logs, clock, timeout_sec=600.0).status == "completed"
+    assert logs == []
+
+
+def test_het_gio_thi_nem_timeout_va_khong_ngu_qua_han():
+    clock, logs = _Clock(), []
+    client, _ = _poller("processing")
+    with pytest.raises(TimeoutError):
+        _wait(client, logs, clock, timeout_sec=20.0)
+    assert clock.now == 20.0
+
+
+def test_loi_mang_tam_thoi_thi_thu_lai_chu_khong_bo_cuoc():
+    """`httpx.TransportError` là mạng chập chờn, không phải câu trả lời của API."""
+    import httpx
+
+    clock, logs = _Clock(), []
+    client, calls = _poller(httpx.ConnectError("mạng chập chờn"), "completed")
+    assert _wait(client, logs, clock, timeout_sec=600.0).status == "completed"
+    assert len(calls) == 2
+    assert "ConnectError" in logs[0]
+
+
+def test_loi_mang_keo_dai_thi_bo_cuoc_sau_so_lan_da_dinh(monkeypatch):
+    import httpx
+
+    import soniox_cli.cli as cli
+
+    monkeypatch.setattr(cli, "POLL_RETRY_MAX", 3)
+    clock, logs = _Clock(), []
+    client, calls = _poller(httpx.ConnectError("mất mạng"))
+    with pytest.raises(httpx.ConnectError):
+        _wait(client, logs, clock, timeout_sec=600.0)
+    assert len(calls) == 4  # lần đầu cộng 3 lần thử lại
+
+
+def test_loi_api_khong_duoc_thu_lai():
+    """API đã trả lời thì tin nó, đừng hỏi lại năm lần rồi mới báo."""
+    from soniox.errors import SonioxError
+
+    clock, logs = _Clock(), []
+    client, calls = _poller(SonioxError("transcription không tồn tại"))
+    with pytest.raises(SonioxError):
+        _wait(client, logs, clock, timeout_sec=600.0)
+    assert len(calls) == 1
+
+
+def test_backoff_bi_cat_theo_han_va_bao_dung_loi_mang():
+    """Hết giờ trong lúc mạng đang hỏng: báo lỗi mạng, đừng khuyên tăng --timeout."""
+    import httpx
+
+    clock, logs = _Clock(), []
+    client, _ = _poller(httpx.ConnectError("mất mạng"))
+    with pytest.raises(httpx.ConnectError):
+        _wait(client, logs, clock, timeout_sec=7.0)
+    assert clock.now == 7.0  # 5 rồi 2, không phải 5 rồi 10
+    # Con số hứa trong cảnh báo phải là con số thật, không phải mức backoff thô.
+    assert "thử lại sau 5s" in logs[0]
+    assert "thử lại sau 2s" in logs[1]
+
+
+def test_mat_ket_noi_khi_cho_van_in_id_de_cuu(monkeypatch, tmp_path, capsys):
+    """Đường bỏ cuộc mới cũng phải để lại id: xem ADR-0008."""
+    import httpx
+
+    import soniox_cli.cli as cli
+
+    monkeypatch.setattr(cli, "POLL_RETRY_MAX", 0)
+    destroyed: list[str] = []
+
+    def boom():
+        raise httpx.ConnectError("mất mạng")
+
+    cli = _transcribe_env(monkeypatch, poll=boom, destroyed=destroyed)
+    with pytest.raises(SystemExit):
+        cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
+    assert destroyed == []
+    err = capsys.readouterr().err
+    assert "TR1" in err and "stt transcript TR1" in err
 
 
 # --------------------------------------------------------------------------- #
