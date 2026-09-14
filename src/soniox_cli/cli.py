@@ -724,8 +724,19 @@ def cmd_stt_transcribe(args) -> None:
     emit_transcript(args, transcript, diarize=diarization_on(args, cfg) and not args.flat)
 
 
+def _require_tokens(transcript, why: str) -> list:
+    """Token, hoặc `die`. Hai nhánh dựng lại từ token đều chết nếu thiếu.
+
+    `transcript.text` thì không cần token nên nhánh text thuần không gọi hàm này.
+    """
+    tokens = getattr(transcript, "tokens", None) or []
+    if not tokens:
+        die(f"transcript không có token nên không {why}")
+    return tokens
+
+
 def emit_transcript(args, transcript, *, diarize: bool) -> None:
-    """In transcript theo đúng dạng người dùng yêu cầu: JSON, phụ đề, hay text."""
+    """In transcript theo đúng dạng yêu cầu: JSON, phụ đề, text theo lượt, hay text thuần."""
     if wants_json(args):
         # Qua write_out chứ không print thẳng: đây là đường ra dữ liệu lớn nhất
         # của CLI, nó phải có -o và có phanh như mọi đường ra khác.
@@ -733,9 +744,7 @@ def emit_transcript(args, transcript, *, diarize: bool) -> None:
         return
     fmt = getattr(args, "subtitles", None)
     if fmt:
-        tokens = getattr(transcript, "tokens", None) or []
-        if not tokens:
-            die("transcript không có token nên không dựng được phụ đề")
+        tokens = _require_tokens(transcript, "dựng được phụ đề")
         write_out(
             args,
             subtitles.render(
@@ -748,9 +757,7 @@ def emit_transcript(args, transcript, *, diarize: bool) -> None:
         )
         return
     if getattr(args, "timestamps", False):
-        tokens = getattr(transcript, "tokens", None) or []
-        if not tokens:
-            die("transcript không có token nên không gắn được mốc thời gian")
+        tokens = _require_tokens(transcript, "gắn được mốc thời gian")
         write_out(
             args,
             subtitles.render_turns(subtitles.build_turns(tokens, with_speaker=diarize)),
