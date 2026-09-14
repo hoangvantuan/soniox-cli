@@ -163,7 +163,7 @@ ref soniox-cli:1:9f2c...; tìm lại: soniox stt list --all, soniox files list -
 dùng lại transcription 0195...  (status completed): đã có job trùng đúng vân tay file + config này, khỏi upload và phiên âm lại.
 ```
 
-Ref được in ra **trước khi upload**, nên kể cả bị `SIGKILL` giữa lúc upload, lúc transcription còn chưa tồn tại, vẫn tìm lại được file mồ côi bằng `soniox files list --all`. Lần chạy sau cũng tự nhận ra file đó và không upload lại.
+Ref được in ra **trước khi upload**, nên nó nằm sẵn trong log trước khi có bất cứ thứ gì tồn tại trên Soniox. Bị giết **sau khi upload xong** mà transcription chưa kịp tạo thì file đã nằm trên Soniox và mang ref đó: `soniox files list --all` tìm ra nó, và lần chạy sau tự nhận ra để khỏi upload lại. Bị giết **giữa lúc đang truyền** thì không có gì để tìm: upload là một request duy nhất, chưa xong thì Soniox chưa có file nào.
 
 | Cờ | Việc |
 |---|---|

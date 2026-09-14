@@ -122,3 +122,21 @@ def test_file_nho_hon_mot_chunk_khong_bam_trung_phan_dau(tmp_path):
     a = fp.compute_ref(_file(tmp_path, "a.bin", b"a" * (n + 10)), model="m", config=None)
     b = fp.compute_ref(_file(tmp_path, "a.bin", b"a" * n + b"b" * 10), model="m", config=None)
     assert a != b
+
+
+# --------------------------------------------------------------------------- #
+# Ranh giới với SDK: trường mới không được đổi vân tay của file cũ
+# --------------------------------------------------------------------------- #
+def test_chi_bam_truong_nguoi_goi_that_su_dat():
+    """`exclude_unset`, không phải `exclude_none`.
+
+    Trường mới của SDK mặc định `False` hay `[]` mà lọt vào vân tay thì mọi ref
+    cũ đổi hết trong im lặng, và việc dùng lại chết mà không ai biết.
+    """
+    assert fp._canonical_config(_cfg(language_hints=["vi"])) == '{"language_hints":["vi"]}'
+
+
+def test_config_rong_khac_khong_co_config():
+    """`CreateTranscriptionConfig()` rỗng vẫn là một lựa chọn, không phải là 'không đặt gì'."""
+    assert fp._canonical_config(None) is None
+    assert fp._canonical_config(_cfg()) == "{}"

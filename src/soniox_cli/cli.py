@@ -549,6 +549,18 @@ def resolve_ref(args, src: dict, model: str, cfg) -> str | None:
         return None
 
 
+def _say_scan_capped(kind: str) -> None:
+    """Chạm trần khi quét thì nói ra, đừng hứa "không có".
+
+    API không lọc được theo `client_reference_id` nên dò ref là quét tuần tự;
+    phần chưa quét vẫn có thể đang giữ đúng thứ cần tìm.
+    """
+    eprint(
+        f"lưu ý: đã quét {REF_SCAN_MAX} {kind} gần nhất mà chưa thấy ref này "
+        f"(API không lọc được theo ref); phần chưa quét có thể vẫn còn."
+    )
+
+
 def _lookup_ref(client, ref: str):
     """Tìm job hoặc file đã có mang đúng `ref`. -> `(transcription|None, file_id|None)`.
 
@@ -562,11 +574,10 @@ def _lookup_ref(client, ref: str):
         if found is not None:
             return found, None
         if capped:
-            eprint(
-                f"lưu ý: đã quét {REF_SCAN_MAX} transcription gần nhất mà chưa thấy ref này "
-                f"(API không lọc được theo ref); coi như chưa có và tạo job mới."
-            )
-        files, _ = scan_for_ref(client.files.list_all(limit=REF_SCAN_PAGE), ref)
+            _say_scan_capped("transcription")
+        files, files_capped = scan_for_ref(client.files.list_all(limit=REF_SCAN_PAGE), ref)
+        if files_capped:
+            _say_scan_capped("file")
         orphan = _newest(files)
         return None, (orphan.id if orphan else None)
     except Exception as e:  # noqa: BLE001 - xem docstring
@@ -587,7 +598,8 @@ def _reuse_or_create(client, args, src: dict, model: str, cfg, ref: str | None):
         if found is not None:
             eprint(
                 f"dùng lại transcription {found.id} (status {found.status}): đã có job "
-                f"trùng đúng vân tay file + config này, khỏi upload và phiên âm lại."
+                f"trùng đúng vân tay file + config này, khỏi upload và phiên âm lại.\n"
+                f"  lấy lại bất cứ lúc nào: soniox stt transcript {found.id}"
             )
             if not args.keep and not args.no_wait:
                 # `--no-wait` không dọn gì cả, nhắc `--keep` ở đó là nói sai.
@@ -774,11 +786,16 @@ def _row_duration(t) -> str:
 
 def _list_row(t) -> str:
     """Đủ để phân biệt hai job trùng tên file: thời điểm tạo, thời lượng, nhãn tự đặt."""
-    ref = getattr(t, "client_reference_id", None)
     return (
         f"{t.id}  {t.status:<10}  {_row_created(t):<16}  {_row_duration(t):>7}  "
-        f"{t.filename or ''}" + (f"  ref={ref}" if ref else "")
+        f"{t.filename or ''}" + _ref_suffix(t)
     )
+
+
+def _ref_suffix(x) -> str:
+    """Đuôi `ref=` dùng chung cho `stt list` và `files list`: cùng một cột, cùng một nghĩa."""
+    ref = getattr(x, "client_reference_id", None)
+    return f"  ref={ref}" if ref else ""
 
 
 def cmd_stt_list(args) -> None:
@@ -899,8 +916,7 @@ def cmd_files_delete_all(args) -> None:
 def _file_row(f) -> str:
     """Có ref thì in ra: file mồ côi (upload xong, transcription chưa kịp tạo)
     chỉ còn ref làm chỗ bám."""
-    ref = getattr(f, "client_reference_id", None)
-    return f"{f.id}  {f.filename}" + (f"  ref={ref}" if ref else "")
+    return f"{f.id}  {f.filename}" + _ref_suffix(f)
 
 
 def cmd_files_list(args) -> None:

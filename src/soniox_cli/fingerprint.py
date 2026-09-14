@@ -39,11 +39,12 @@ def compute_ref(path: Path, *, model: str, config: Any) -> str:
     Cùng file + cùng model + cùng config thì luôn ra cùng chuỗi, trên mọi máy,
     ở mọi phiên.
     """
+    size = path.stat().st_size   # một ảnh chụp duy nhất, dùng cho cả hai trường dưới
     material = json.dumps(
         {
             "name": path.name,
-            "size": path.stat().st_size,
-            "bytes": _digest_bytes(path),
+            "size": size,
+            "bytes": _digest_bytes(path, size),
             "model": model,
             "config": _canonical_config(config),
         },
@@ -64,9 +65,8 @@ def is_auto_ref(ref: str | None) -> bool:
     return bool(ref) and ref.startswith(f"{REF_PREFIX}:")
 
 
-def _digest_bytes(path: Path) -> str:
+def _digest_bytes(path: Path, size: int) -> str:
     """Băm đầu 1 MB và đuôi 1 MB. File nhỏ hơn thì băm trọn, không đọc trùng."""
-    size = path.stat().st_size
     h = hashlib.sha256()
     with path.open("rb") as f:
         h.update(f.read(CHUNK_BYTES))
@@ -82,10 +82,19 @@ def _digest_bytes(path: Path) -> str:
 def _canonical_config(config: Any) -> str | None:
     """Config STT về dạng chuỗi ổn định: cùng nội dung thì cùng chuỗi.
 
-    `sort_keys` để thứ tự cờ trên dòng lệnh không đổi vân tay; `exclude_none` để
-    một trường mới của SDK (mặc định None) không làm lệch vân tay của file cũ.
+    `sort_keys` để thứ tự cờ trên dòng lệnh không đổi vân tay.
+
+    `exclude_unset` chứ không phải `exclude_none`: chỉ băm thứ người gọi **thật sự
+    đặt**. Một trường mới của SDK mặc định `False` hay `[]` sẽ lọt qua
+    `exclude_none` và làm lệch vân tay của **mọi file cũ** mà không ai kịp tăng
+    `REF_VERSION`, giết im lặng việc dùng lại. `build_stt_config` chỉ nhồi vào
+    model những key được đặt tay, nên `exclude_unset` là ranh giới đúng.
     """
     if config is None:
         return None
-    data = config.model_dump(mode="json", exclude_none=True) if hasattr(config, "model_dump") else config
+    data = (
+        config.model_dump(mode="json", exclude_unset=True)
+        if hasattr(config, "model_dump")
+        else config
+    )
     return json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))

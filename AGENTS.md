@@ -39,12 +39,14 @@ Test cũng **không được để lại file trong temp của hệ thống**. N
 - **Vòng lặp chờ là code của repo này, không phải của SDK.** `wait_for_transcription` thay `client.stt.wait` vì `wait` không nhận callback nên không cắm heartbeat vào được. Deadline, khoảng nghỉ, backoff và phân loại lỗi giờ là thứ mình nuôi. Chỉ thử lại `httpx.TransportError`: SDK đã đổi mọi non-2xx thành `SonioxAPIError` trong `ensure_success`, nên `httpx.HTTPStatusError` không bao giờ lọt tới đây, còn `SonioxError` thì API đã phán quyết, đừng hỏi lại. Xem [ADR-0009](docs/adr/0009-cli-tu-nuoi-vong-lap-cho.md).
 - **Lệnh cứu hộ không được cho kết quả kém hơn lệnh nó cứu hộ.** `stt transcript <id>` phải in ra y hệt `stt transcribe` cho cùng một job, nên nó đi chung `emit_transcript`. Đừng thêm "đường nhanh cho text thuần": `transcript.text` không có nhãn speaker và không có bản dịch.
 - **Ref tự sinh là danh tính, `--ref` là nhãn.** Không có `--ref` thì `transcribe` tự sinh ref từ vân tay file + model + config, in ra stderr **trước khi upload**, rồi dò `stt list`/`files list` để dùng lại job hoặc file cũ trùng ref. Chỉ dò theo ref mang tiền tố `soniox-cli:`: nhãn người dùng đặt không bảo đảm duy nhất. Đổi công thức vân tay thì phải tăng `REF_VERSION`. Xem [ADR-0010](docs/adr/0010-ref-tu-sinh-theo-van-tay-dau-vao.md).
-- **Dò ref hỏng thì cảnh báo, không `die()`.** Ngoại lệ có chủ đích duy nhất với quy ước lỗi ở trên: `_lookup_ref` nuốt mọi lỗi rồi tạo job mới. Một tiện ích tiết kiệm tiền không được làm `transcribe` kém tin cậy hơn lúc chưa có nó.
+- **Đường ref hỏng thì cảnh báo, không `die()`.** Hai ngoại lệ có chủ đích với quy ước lỗi ở trên, cả hai đều nằm trên đường ref: `resolve_ref` nuốt `OSError` lúc lấy vân tay, `_lookup_ref` nuốt mọi lỗi lúc dò. Cả hai đều `eprint` rồi đi tiếp bằng đường thường. Một tiện ích tiết kiệm tiền không được làm `transcribe` kém tin cậy hơn lúc chưa có nó. Thêm bước mới trên đường ref thì giữ nguyên tính chất đó.
 - **Mọi đường ra dữ liệu lớn đều đi qua `write_out`.** Đó là chỗ duy nhất có `-o` và cảnh báo `BIG_OUTPUT_CHARS`. `print_json` đi thẳng ra stdout nên chỉ dùng cho output ngắn (`emit`); transcript thì dùng `write_out(args, json_text(...))`.
 
 ## Ràng buộc phụ thuộc
 
 `soniox>=2.3.2,<3`. Code bám vào nội bộ SDK: `client.request()` và `client.tts_api_base_url`. Nâng qua major phải kiểm lại `cmd_tts_generate`, `_request_json`, và các đường dẫn `/voices`, `/usage-logs`.
+
+Vân tay ref bám vào `CreateTranscriptionConfig` theo một cách riêng: `_canonical_config` băm `model_dump(exclude_unset=True)`, nên trường mới của SDK không đổi vân tay của file cũ. Đừng đổi sang `exclude_none`: một trường mới mặc định `False` hay `[]` sẽ làm lệch vân tay của mọi file cũ mà không ai kịp tăng `REF_VERSION`.
 
 Vòng lặp chờ còn bám vào một hành vi nội bộ nữa: `ensure_success` đổi mọi non-2xx thành `SonioxAPIError`, nên `httpx.HTTPStatusError` không bao giờ tới được `wait_for_transcription`. Nâng qua major phải kiểm lại cả chỗ đó: nếu SDK thôi bọc, ranh giới "thử lại hay không" sẽ sai.
 

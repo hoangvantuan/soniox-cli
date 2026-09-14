@@ -1427,3 +1427,29 @@ def test_no_wait_dung_lai_thi_khong_hua_don_dep(tmp_path, monkeypatch, capsys):
     cu = _job("CU", "completed", ref=_ref_of(tmp_path, path), created=13)
     _transcribe(monkeypatch, ["stt", "transcribe", path, "--no-wait"], jobs=[cu])
     assert "--keep" not in capsys.readouterr().err
+
+
+def test_quet_cham_tran_thi_noi_ra_ca_hai_ben(tmp_path, monkeypatch, capsys):
+    """Im lặng bỏ sót file mồ côi nghĩa là upload lại 147 MB mà không ai biết vì sao."""
+    from soniox_cli.cli import REF_SCAN_MAX
+
+    def rac(prefix):
+        return [
+            SimpleNamespace(id=f"{prefix}{i}", status="completed",
+                            client_reference_id="khac", created_at=None)
+            for i in range(REF_SCAN_MAX + 1)
+        ]
+
+    _transcribe(monkeypatch, ["stt", "transcribe", _audio(tmp_path)],
+                jobs=rac("T"), files=rac("F"))
+    err = capsys.readouterr().err
+    assert "transcription gần nhất" in err
+    assert "file gần nhất" in err
+
+
+def test_dong_dung_lai_cho_luon_lenh_lay_transcript(tmp_path, monkeypatch, capsys):
+    """Ngang hàng với dòng 'đã tạo': cho người ta đúng thứ họ sẽ dán lại."""
+    path = _audio(tmp_path)
+    cu = _job("CU", "completed", ref=_ref_of(tmp_path, path), created=13)
+    _transcribe(monkeypatch, ["stt", "transcribe", path], jobs=[cu])
+    assert "soniox stt transcript CU" in capsys.readouterr().err
