@@ -150,7 +150,29 @@ soniox stt transcript <id> -o /tmp/ket-qua.txt   # kéo transcript về
 soniox stt transcript <id> --destroy             # kéo về xong dọn luôn, cả file đính kèm
 ```
 
-Đặt `--ref <nhãn>` lúc `transcribe` thì `stt list --json` lọc được chính xác theo `client_reference_id`, khỏi phải đoán theo tên file. Nhãn gắn cho **cả file lẫn transcription**, nên còn tìm được cả trường hợp bị giết giữa lúc upload, lúc mà transcription còn chưa kịp tồn tại.
+Không cần nhớ gì cả: **chạy lại đúng lệnh cũ là đủ**. `transcribe` tự sinh một **ref theo vân tay** của đầu vào (tên file + kích thước + 1 MB đầu + 1 MB cuối + model + config), dò xem trên Soniox đã có job trùng vân tay đó chưa, có thì lấy luôn kết quả về:
+
+```bash
+soniox stt transcribe hop.mp4 -o /tmp/hop.txt   # lần 1: upload, phiên âm, trả tiền
+# ... tiến trình bị giết giữa chừng ...
+soniox stt transcribe hop.mp4 -o /tmp/hop.txt   # lần 2: dùng lại job cũ, không trả tiền lần nữa
+```
+
+```
+ref soniox-cli:1:9f2c...; tìm lại: soniox stt list --all, soniox files list --all
+dùng lại transcription 0195...  (status completed): đã có job trùng đúng vân tay file + config này, khỏi upload và phiên âm lại.
+```
+
+Ref được in ra **trước khi upload**, nên kể cả bị `SIGKILL` giữa lúc upload, lúc transcription còn chưa tồn tại, vẫn tìm lại được file mồ côi bằng `soniox files list --all`. Lần chạy sau cũng tự nhận ra file đó và không upload lại.
+
+| Cờ | Việc |
+|---|---|
+| (mặc định) | Tự sinh ref theo vân tay, tự dùng lại job hoặc file cũ trùng ref |
+| `--no-reuse` | Vẫn gắn ref, nhưng luôn tạo job mới |
+| `--no-ref` | Không gắn ref nào cả |
+| `--ref <nhãn>` | Nhãn tự đặt, thay cho ref tự sinh. Nhãn thường thì không dò dùng lại, vì Soniox không đòi `client_reference_id` phải duy nhất; gõ lại nguyên một ref `soniox-cli:...` thì có |
+
+Đổi model, bật `--diarize`, đổi `--translate`: vân tay đổi theo, nên đó là job khác và được phiên âm lại. Chi tiết và đánh đổi (sửa byte ở giữa file lớn thì vân tay không đổi): [ADR-0010](docs/adr/0010-ref-tu-sinh-theo-van-tay-dau-vao.md).
 
 `--no-wait` **không** có auto-destroy. Dọn tay bằng `stt transcript <id> --destroy`, hoặc `stt delete <id> --destroy`.
 
@@ -194,7 +216,7 @@ Soniox trả token bản dịch **không kèm mốc thời gian**; CLI mượn k
   - Hết `--timeout` (mặc định 600s): CLI in ra id kèm lệnh để lấy kết quả hoặc dọn thủ công.
   - Mất kết nối giữa lúc chờ: CLI thử lại tối đa 5 lần (nghỉ 5/10/20/40/60 giây) rồi mới bỏ cuộc, và khi bỏ cuộc vẫn in id ra. Mạng hỏng ở máy bạn không nói gì về job trên Soniox. Xem [ADR-0009](docs/adr/0009-cli-tu-nuoi-vong-lap-cho.md).
   - Ctrl-C hoặc `SIGTERM` giữa chừng: CLI dọn file tạm cục bộ rồi in id, **không xóa job trên Soniox**. Hủy chờ không phải hủy job. Xem [ADR-0008](docs/adr/0008-tin-hieu-huy-khong-xoa-du-lieu-tu-xa.md).
-  - `--ref <nhãn>` gắn nhãn tự đặt cho cả file lẫn transcription, để tìm lại bằng `stt list` khi mất sạch ngữ cảnh.
+  - **Ref tự sinh theo vân tay file**: chạy lại đúng lệnh cũ thì CLI nhận ra job đã chạy rồi và lấy kết quả về thay vì upload và phiên âm lại. `--no-reuse` để luôn tạo job mới, `--no-ref` để tắt hẳn, `--ref <nhãn>` để tự đặt nhãn. Xem [ADR-0010](docs/adr/0010-ref-tu-sinh-theo-van-tay-dau-vao.md).
 - **Người nói và bản dịch tự hiện ra.** Cả `transcribe` lẫn `transcript` đều gắn nhãn `Speaker N:` khi token có speaker, và xen kẽ bản dịch khi có. `--flat` tắt nhãn Speaker (bản dịch vẫn giữ). `--group-speakers` là cờ cũ, nay không còn tác dụng, giữ lại cho tương thích. `--timestamps` thêm mốc `[HH:MM:SS]` và ngắt dòng theo lượt nói.
 - **Định dạng TTS** suy từ đuôi `-o`: `.wav`, `.mp3`, `.flac`, `.opus`, `.aac`, `.pcm`. Đuôi lạ sẽ báo lỗi chứ không âm thầm ghi byte WAV vào file sai đuôi; muốn ép thì dùng `--format`.
 - **`--speed`** trong khoảng 0.7 đến 1.3, kiểm tra ngay phía client.

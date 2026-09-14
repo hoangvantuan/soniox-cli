@@ -8,6 +8,7 @@ Hướng dẫn cho agent làm việc trên repo này.
 
 - `src/soniox_cli/cli.py`: toàn bộ lệnh và parser.
 - `src/soniox_cli/subtitles.py`: dựng SRT/VTT và text theo lượt từ token. Thuần logic, không chạm mạng, test dày.
+- `src/soniox_cli/fingerprint.py`: vân tay xác định của đầu vào STT, nguồn của ref tự sinh. Thuần logic, chỉ đọc file.
 - `src/soniox_cli/media.py`: tách audio khỏi video trước khi upload. Gọi `ffmpeg`/`ffprobe` qua `subprocess`.
 - `src/soniox_cli/update.py`: tự cập nhật. Nhận diện cách cài qua `uv-receipt.toml` rồi ủy quyền cho `uv`.
 
@@ -37,6 +38,8 @@ Test cũng **không được để lại file trong temp của hệ thống**. N
 - **Id phải ra ngoài ngay khi tồn tại.** `stt transcribe` tự tạo rồi tự chờ (thay vì dùng `transcribe_and_wait_with_tokens`) để luôn nắm được id, và in id ra stderr **vô điều kiện** ngay sau khi tạo. Đừng đưa lời in đó vào một nhánh nào cả: `SIGKILL`, mất điện và harness teardown không chạy `except` nào hết. Và mọi đường bỏ cuộc (hết giờ, `Ctrl-C`, `SIGTERM`, mất kết nối giữa lúc chờ) đều phải in id kèm `_recovery_hint`. Thêm đường bỏ cuộc mới thì thêm cả dòng đó.
 - **Vòng lặp chờ là code của repo này, không phải của SDK.** `wait_for_transcription` thay `client.stt.wait` vì `wait` không nhận callback nên không cắm heartbeat vào được. Deadline, khoảng nghỉ, backoff và phân loại lỗi giờ là thứ mình nuôi. Chỉ thử lại `httpx.TransportError`: SDK đã đổi mọi non-2xx thành `SonioxAPIError` trong `ensure_success`, nên `httpx.HTTPStatusError` không bao giờ lọt tới đây, còn `SonioxError` thì API đã phán quyết, đừng hỏi lại. Xem [ADR-0009](docs/adr/0009-cli-tu-nuoi-vong-lap-cho.md).
 - **Lệnh cứu hộ không được cho kết quả kém hơn lệnh nó cứu hộ.** `stt transcript <id>` phải in ra y hệt `stt transcribe` cho cùng một job, nên nó đi chung `emit_transcript`. Đừng thêm "đường nhanh cho text thuần": `transcript.text` không có nhãn speaker và không có bản dịch.
+- **Ref tự sinh là danh tính, `--ref` là nhãn.** Không có `--ref` thì `transcribe` tự sinh ref từ vân tay file + model + config, in ra stderr **trước khi upload**, rồi dò `stt list`/`files list` để dùng lại job hoặc file cũ trùng ref. Chỉ dò theo ref mang tiền tố `soniox-cli:`: nhãn người dùng đặt không bảo đảm duy nhất. Đổi công thức vân tay thì phải tăng `REF_VERSION`. Xem [ADR-0010](docs/adr/0010-ref-tu-sinh-theo-van-tay-dau-vao.md).
+- **Dò ref hỏng thì cảnh báo, không `die()`.** Ngoại lệ có chủ đích duy nhất với quy ước lỗi ở trên: `_lookup_ref` nuốt mọi lỗi rồi tạo job mới. Một tiện ích tiết kiệm tiền không được làm `transcribe` kém tin cậy hơn lúc chưa có nó.
 - **Mọi đường ra dữ liệu lớn đều đi qua `write_out`.** Đó là chỗ duy nhất có `-o` và cảnh báo `BIG_OUTPUT_CHARS`. `print_json` đi thẳng ra stdout nên chỉ dùng cho output ngắn (`emit`); transcript thì dùng `write_out(args, json_text(...))`.
 
 ## Ràng buộc phụ thuộc
@@ -50,7 +53,7 @@ Vòng lặp chờ còn bám vào một hành vi nội bộ nữa: `ensure_succes
 Trước khi sửa code, đọc:
 
 - [`CONTEXT.md`](CONTEXT.md): bảng thuật ngữ và ranh giới. Phân biệt **transcription** với **transcript**, **delete** với **destroy**.
-- [`docs/adr/`](docs/adr/): 9 quyết định kiến trúc đã chốt kèm lý do và đánh đổi.
+- [`docs/adr/`](docs/adr/): 10 quyết định kiến trúc đã chốt kèm lý do và đánh đổi.
 
 Nếu thay đổi của bạn đi ngược một ADR, nói thẳng ra thay vì lặng lẽ ghi đè.
 

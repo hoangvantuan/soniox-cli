@@ -599,7 +599,16 @@ def _transcribe_env(monkeypatch, *, poll, destroyed, created=None):
         def destroy(self, tid):
             destroyed.append(tid)
 
-    monkeypatch.setattr(cli, "get_client", lambda: SimpleNamespace(stt=FakeStt()))
+        def list_all(self, limit=100):
+            return iter(())      # tài khoản trống: dò ref không thấy gì
+
+    monkeypatch.setattr(
+        cli,
+        "get_client",
+        lambda: SimpleNamespace(
+            stt=FakeStt(), files=SimpleNamespace(list_all=lambda limit=100: iter(()))
+        ),
+    )
     return cli
 
 
@@ -714,7 +723,8 @@ def test_ref_duoc_gui_len_soniox(monkeypatch, tmp_path, capsys):
     assert created[0]["client_reference_id"] == "hop-2026-09-13"
 
 
-def test_khong_co_ref_thi_khong_tu_bia(monkeypatch, tmp_path, capsys):
+def test_no_ref_thi_khong_gan_nhan_nao(monkeypatch, tmp_path, capsys):
+    """Không có ref tự sinh thì cũng không có nhãn bịa nào khác. Xem ADR-0010."""
     created: list[dict] = []
     cli = _transcribe_env(
         monkeypatch,
@@ -722,7 +732,7 @@ def test_khong_co_ref_thi_khong_tu_bia(monkeypatch, tmp_path, capsys):
         destroyed=[],
         created=created,
     )
-    cli.cmd_stt_transcribe(_transcribe_args(tmp_path))
+    cli.cmd_stt_transcribe(_transcribe_args(tmp_path, "--no-ref"))
     capsys.readouterr()
     assert created[0]["client_reference_id"] is None
 
@@ -1037,6 +1047,79 @@ def test_nang_cap_that_bai_thi_thoat_khac_0(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Dò ref: quét danh sách và chọn job đáng dùng lại
+# --------------------------------------------------------------------------- #
+def _job(id, status, ref="soniox-cli:1:aa", created=None):
+    from datetime import datetime, timezone
+
+    return SimpleNamespace(
+        id=id,
+        status=status,
+        client_reference_id=ref,
+        created_at=datetime(2026, 9, created, tzinfo=timezone.utc) if created else None,
+    )
+
+
+def test_scan_lay_dung_ban_ghi_mang_ref():
+    from soniox_cli.cli import scan_for_ref
+
+    items = [_job("A", "completed", ref="khac"), _job("B", "completed"), _job("C", "queued")]
+    matches, capped = scan_for_ref(items, "soniox-cli:1:aa")
+    assert [m.id for m in matches] == ["B", "C"]
+    assert capped is False
+
+
+def test_scan_dung_o_tran_va_bao_da_cham_tran():
+    from soniox_cli.cli import scan_for_ref
+
+    items = [_job(str(i), "completed", ref="khac") for i in range(10)] + [_job("X", "completed")]
+    matches, capped = scan_for_ref(items, "soniox-cli:1:aa", scan_max=3)
+    assert matches == [] and capped is True
+
+
+def test_scan_khong_keo_het_generator_khi_da_cham_tran():
+    """Mỗi trang `stt list` là một lời gọi mạng: chạm trần thì phải thôi kéo."""
+    from soniox_cli.cli import scan_for_ref
+
+    keo = []
+
+    def nguon():
+        for i in range(1000):
+            keo.append(i)
+            yield _job(str(i), "completed", ref="khac")
+
+    scan_for_ref(nguon(), "soniox-cli:1:aa", scan_max=5)
+    assert len(keo) == 5
+
+
+def test_pick_uu_tien_completed_hon_dang_chay():
+    from soniox_cli.cli import pick_reuse
+
+    assert pick_reuse([_job("A", "processing", created=13), _job("B", "completed", created=12)]).id == "B"
+
+
+def test_pick_lay_ban_moi_nhat_trong_cung_hang():
+    from soniox_cli.cli import pick_reuse
+
+    assert pick_reuse([_job("A", "completed", created=12), _job("B", "completed", created=13)]).id == "B"
+
+
+def test_pick_bo_qua_job_loi():
+    from soniox_cli.cli import pick_reuse
+
+    assert pick_reuse([_job("A", "error", created=13)]) is None
+    assert pick_reuse([]) is None
+
+
+def test_pick_thieu_created_at_van_chon_duoc():
+    """`created_at` vắng mặt ở job vừa tạo; thiếu mốc thì xếp sau, không nổ."""
+    from soniox_cli.cli import pick_reuse
+
+    assert pick_reuse([_job("A", "completed", created=None), _job("B", "completed", created=12)]).id == "B"
+    assert pick_reuse([_job("A", "completed", created=None)]).id == "A"
+
+
+# --------------------------------------------------------------------------- #
 # --timestamps: text ngắt dòng theo lượt
 # --------------------------------------------------------------------------- #
 def _timed(text, start, end, *, speaker=None):
@@ -1120,3 +1203,227 @@ def test_transcribe_cung_co_timestamps():
     """Lệnh cứu hộ không kém hơn lệnh nó cứu hộ, nên cả hai phải có cờ này."""
     args = build_parser().parse_args(["stt", "transcribe", "a.mp3", "--timestamps"])
     assert args.timestamps is True
+
+
+# --------------------------------------------------------------------------- #
+# stt transcribe: ref tự sinh theo vân tay, và dùng lại job cũ trùng ref
+# --------------------------------------------------------------------------- #
+class _FakeStt:
+    def __init__(self, jobs=(), transcript=None):
+        self.jobs = list(jobs)
+        self.created = []
+        self.destroyed = []
+        self.pages = 0
+        self._transcript = transcript or SimpleNamespace(text="xin chào", tokens=[])
+
+    def list_all(self, limit=100):
+        self.pages += 1
+        yield from self.jobs
+
+    def transcribe(self, **kw):
+        self.created.append(kw)
+        return SimpleNamespace(id="NEW", status="completed", client_reference_id=kw.get("client_reference_id"))
+
+    def get(self, id):
+        return SimpleNamespace(id=id, status="completed", error_message=None)
+
+    def get_transcript(self, id):
+        self._asked = id
+        return self._transcript
+
+    def destroy(self, id):
+        self.destroyed.append(id)
+
+
+class _FakeFiles:
+    def __init__(self, files=()):
+        self.files = list(files)
+
+    def list_all(self, limit=100):
+        yield from self.files
+
+
+def _transcribe(monkeypatch, argv, *, jobs=(), files=()):
+    """Chạy `stt transcribe` trên client giả. Trả về stt giả để soi đã gọi gì."""
+    import soniox_cli.cli as cli
+
+    stt = _FakeStt(jobs)
+    monkeypatch.setattr(cli, "get_client", lambda: SimpleNamespace(stt=stt, files=_FakeFiles(files)))
+    cli.cmd_stt_transcribe(build_parser().parse_args(argv))
+    return stt
+
+
+def _audio(tmp_path, name="hop.mp3", data=b"noi dung hop"):
+    p = tmp_path / name
+    p.write_bytes(data)
+    return str(p)
+
+
+def test_transcribe_tu_sinh_ref_theo_van_tay(tmp_path, monkeypatch, capsys):
+    from soniox_cli import fingerprint
+
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", _audio(tmp_path)])
+    ref = stt.created[0]["client_reference_id"]
+    assert fingerprint.is_auto_ref(ref)
+    # Ref phải ra stderr TRƯỚC lúc upload: bị giết giữa lúc upload thì
+    # transcription còn chưa tồn tại, ref là đường duy nhất tìm lại file mồ côi.
+    assert ref in capsys.readouterr().err
+
+
+def test_transcribe_no_ref_giu_nguyen_hanh_vi_cu(tmp_path, monkeypatch):
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", _audio(tmp_path), "--no-ref"])
+    assert stt.created[0]["client_reference_id"] is None
+    assert stt.pages == 0      # không ref thì không dò
+
+
+def test_transcribe_ref_tu_dat_thang_van_tay(tmp_path, monkeypatch):
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", _audio(tmp_path), "--ref", "hop-13"])
+    assert stt.created[0]["client_reference_id"] == "hop-13"
+    assert stt.pages == 0      # nhãn tự đặt không bảo đảm duy nhất: dò theo nó là đoán mò
+
+
+def test_transcribe_ref_va_no_ref_nguoc_nhau(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit):
+        _transcribe(monkeypatch, ["stt", "transcribe", _audio(tmp_path), "--ref", "x", "--no-ref"])
+
+
+def test_transcribe_url_khong_tu_sinh_ref(monkeypatch):
+    """URL không cho vân tay đáng tin: nội dung đổi được dưới chân mình."""
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", "https://x/a.mp3"])
+    assert stt.created[0]["client_reference_id"] is None
+
+
+def _ref_of(tmp_path, path, **kw):
+    from soniox_cli import fingerprint
+
+    return fingerprint.compute_ref(
+        Path(path), model=kw.get("model", "stt-async-v5"), config=kw.get("config")
+    )
+
+
+def test_transcribe_thay_job_completed_trung_ref_thi_dung_lai(tmp_path, monkeypatch, capsys):
+    path = _audio(tmp_path)
+    cu = _job("CU", "completed", ref=_ref_of(tmp_path, path), created=13)
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", path], jobs=[cu])
+    assert stt.created == []           # không upload, không phiên âm lại
+    assert stt._asked == "CU"          # lấy transcript của chính job cũ
+    assert "CU" in capsys.readouterr().err
+
+
+def test_transcribe_dung_lai_job_cu_van_theo_luat_don_dep(tmp_path, monkeypatch):
+    """Dùng lại không phải `--keep`: mặc định vẫn dọn, y như job vừa tạo."""
+    path = _audio(tmp_path)
+    cu = _job("CU", "completed", ref=_ref_of(tmp_path, path), created=13)
+    assert _transcribe(monkeypatch, ["stt", "transcribe", path], jobs=[cu]).destroyed == ["CU"]
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", path, "--keep"], jobs=[cu])
+    assert stt.destroyed == []
+
+
+def test_transcribe_ref_trung_nhung_config_khac_thi_la_job_khac(tmp_path, monkeypatch):
+    """Dịch sang tiếng khác là job khác, dù cùng audio."""
+    path = _audio(tmp_path)
+    cu = _job("CU", "completed", ref=_ref_of(tmp_path, path), created=13)
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", path, "--translate", "vi"], jobs=[cu])
+    assert len(stt.created) == 1
+
+
+def test_transcribe_no_reuse_van_gan_ref_nhung_tao_job_moi(tmp_path, monkeypatch):
+    path = _audio(tmp_path)
+    cu = _job("CU", "completed", ref=_ref_of(tmp_path, path), created=13)
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", path, "--no-reuse"], jobs=[cu])
+    assert len(stt.created) == 1
+    assert stt.created[0]["client_reference_id"] == _ref_of(tmp_path, path)
+
+
+def test_transcribe_job_loi_thi_khong_dung_lai(tmp_path, monkeypatch):
+    path = _audio(tmp_path)
+    cu = _job("CU", "error", ref=_ref_of(tmp_path, path), created=13)
+    assert len(_transcribe(monkeypatch, ["stt", "transcribe", path], jobs=[cu]).created) == 1
+
+
+def test_transcribe_thay_file_mo_coi_trung_ref_thi_khoi_upload_lai(tmp_path, monkeypatch):
+    """Bị giết giữa lúc tạo transcription: file đã lên rồi, đừng upload 147 MB nữa."""
+    path = _audio(tmp_path)
+    ref = _ref_of(tmp_path, path)
+    mo_coi = SimpleNamespace(id="F1", client_reference_id=ref, created_at=None)
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", path], jobs=[], files=[mo_coi])
+    assert stt.created[0].get("file_id") == "F1"
+    assert "file" not in stt.created[0]
+
+
+def test_transcribe_do_ref_hong_thi_van_chay_tiep(tmp_path, monkeypatch, capsys):
+    """Dò lại là tiện ích tiết kiệm tiền, không được biến `transcribe` thành kém tin hơn."""
+    import soniox_cli.cli as cli
+
+    class Hong(_FakeStt):
+        def list_all(self, limit=100):
+            raise RuntimeError("mạng hỏng")
+            yield
+
+    stt = Hong()
+    monkeypatch.setattr(cli, "get_client", lambda: SimpleNamespace(stt=stt, files=_FakeFiles()))
+    cli.cmd_stt_transcribe(build_parser().parse_args(["stt", "transcribe", _audio(tmp_path)]))
+    assert len(stt.created) == 1
+    assert "cảnh báo" in capsys.readouterr().err
+
+
+def test_transcribe_no_wait_bat_duoc_job_dang_chay_trung_ref(tmp_path, monkeypatch, capsys):
+    path = _audio(tmp_path)
+    cu = _job("CU", "processing", ref=_ref_of(tmp_path, path), created=13)
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", path, "--no-wait"], jobs=[cu])
+    assert stt.created == []
+    assert "CU" in capsys.readouterr().out
+
+
+def test_files_list_in_ref_de_tim_lai_file_mo_coi(monkeypatch, capsys):
+    import soniox_cli.cli as cli
+
+    rows = [SimpleNamespace(id="F1", filename="hop.m4a", client_reference_id="soniox-cli:1:aa")]
+    monkeypatch.setattr(
+        cli, "get_client",
+        lambda: SimpleNamespace(files=SimpleNamespace(list=lambda limit=None: SimpleNamespace(files=rows))),
+    )
+    cli.cmd_files_list(build_parser().parse_args(["files", "list"]))
+    assert "ref=soniox-cli:1:aa" in capsys.readouterr().out
+
+
+def test_transcribe_ref_dat_tay_co_tien_to_thi_van_do(tmp_path, monkeypatch):
+    """Tiền tố là thứ phân biệt danh tính với nhãn, không phải chuyện ai gõ ra nó."""
+    path = _audio(tmp_path)
+    ref = _ref_of(tmp_path, path)
+    cu = _job("CU", "completed", ref=ref, created=13)
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", path, "--ref", ref], jobs=[cu])
+    assert stt.created == [] and stt._asked == "CU"
+
+
+def _cam_tach_audio(monkeypatch):
+    """Bẫy: chạm vào ffmpeg là hỏng bài. Tách 993 MB mất 3 phút, đúng thứ cần né."""
+    import soniox_cli.cli as cli
+
+    monkeypatch.setattr(
+        cli.media, "prepared_upload",
+        lambda *a, **k: pytest.fail("đã có job/file trùng ref thì không được tách audio"),
+    )
+
+
+def test_transcribe_dung_lai_job_thi_khong_chay_ffmpeg(tmp_path, monkeypatch):
+    path = _audio(tmp_path, name="hop.mp4")
+    cu = _job("CU", "completed", ref=_ref_of(tmp_path, path), created=13)
+    _cam_tach_audio(monkeypatch)
+    assert _transcribe(monkeypatch, ["stt", "transcribe", path], jobs=[cu]).created == []
+
+
+def test_transcribe_dung_lai_file_mo_coi_thi_khong_chay_ffmpeg(tmp_path, monkeypatch):
+    path = _audio(tmp_path, name="hop.mp4")
+    mo_coi = SimpleNamespace(id="F1", client_reference_id=_ref_of(tmp_path, path), created_at=None)
+    _cam_tach_audio(monkeypatch)
+    stt = _transcribe(monkeypatch, ["stt", "transcribe", path], jobs=[], files=[mo_coi])
+    assert stt.created[0].get("file_id") == "F1"
+
+
+def test_no_wait_dung_lai_thi_khong_hua_don_dep(tmp_path, monkeypatch, capsys):
+    """`--no-wait` không dọn gì cả; nhắc `--keep` ở đó là nói sai."""
+    path = _audio(tmp_path)
+    cu = _job("CU", "completed", ref=_ref_of(tmp_path, path), created=13)
+    _transcribe(monkeypatch, ["stt", "transcribe", path, "--no-wait"], jobs=[cu])
+    assert "--keep" not in capsys.readouterr().err

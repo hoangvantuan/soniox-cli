@@ -28,7 +28,9 @@ CLI **không giữ state**. Mọi thứ bền vững đều nằm trên Soniox; 
 | **track** | Luồng token dùng cho phụ đề: `original`, `translation`, `both`, hay `auto` (có dịch thì lấy dịch). |
 | **escape hatch** | `--config-json`: đường truyền thẳng tham số mà CLI chưa có cờ riêng. Xem [ADR-0004](docs/adr/0004-loc-config-json-bat-doi-xung.md). |
 | **mồ côi** | Job mà **id của nó không tồn tại ở đâu ngoài Soniox**. Không phải "job còn sót lại": job còn sót mà biết id là tài sản phục hồi, không phải rác. |
-| **ref** | `client_reference_id`: nhãn do người gọi đặt, gắn cho **cả file lẫn transcription**. Đặt bằng `--ref`, tìm lại bằng `stt list`. Đây là cách chống mồ côi khi id còn chưa kịp tồn tại. |
+| **ref** | `client_reference_id`: nhãn gắn cho **cả file lẫn transcription**, tìm lại bằng `stt list` / `files list`. Đây là cách chống mồ côi khi id còn chưa kịp tồn tại. Hai loại: nhãn người dùng đặt bằng `--ref`, và **ref tự sinh** theo vân tay (tiền tố `soniox-cli:`). |
+| **vân tay** | Khóa xác định của một lần phiên âm, tính từ **tên file + kích thước + 1 MB đầu + 1 MB cuối + model + config**. Tái tạo được từ chính file đầu vào, không cần nhớ gì. Là nguồn của ref tự sinh. Xem [ADR-0010](docs/adr/0010-ref-tu-sinh-theo-van-tay-dau-vao.md). |
+| **dùng lại** | `transcribe` thấy job cũ trùng ref tự sinh thì lấy luôn transcript của nó, không upload và không phiên âm lại. Tắt bằng `--no-reuse`. |
 | **heartbeat** | Dòng stderr khoảng 30 giây một lần trong lúc `stt transcribe` đứng chờ: id, thời gian đã trôi qua, `status`. Tín hiệu sống, **không phải** thanh tiến độ: Soniox không trả phần trăm hoàn thành. Xem [ADR-0009](docs/adr/0009-cli-tu-nuoi-vong-lap-cho.md). |
 | **hủy chờ** | Thôi đứng đợi kết quả (`Ctrl-C`, `SIGTERM`). **Không** đụng tới job trên Soniox. Xem [ADR-0008](docs/adr/0008-tin-hieu-huy-khong-xoa-du-lieu-tu-xa.md). |
 | **hủy job** | Xóa dữ liệu trên Soniox. Chỉ xảy ra khi người dùng nói thẳng (`stt delete`), hoặc khi `transcribe` đã lấy xong transcript. |
@@ -43,3 +45,5 @@ CLI **không giữ state**. Mọi thứ bền vững đều nằm trên Soniox; 
 - **heartbeat ≠ tiến độ**: dòng heartbeat nói "còn sống, đang ở trạng thái này", không nói "còn bao lâu nữa".
 - **hủy chờ ≠ hủy job**: `Ctrl-C` và `SIGTERM` chỉ nói được "thôi đợi", không nói được "vứt dữ liệu". Rác quota tự lành sau 30 ngày; transcript đã xóa thì không.
 - **mồ côi không phải "còn sót"**: thứ quyết định là id có tồn tại ngoài tiến trình hay không, không phải job có còn trên Soniox hay không.
+- **ref tự sinh ≠ nhãn `--ref`**: một bên là danh tính suy ra được từ file, một bên là nhãn người dùng đặt mà Soniox nói rõ "does not need to be unique". Tiền tố `soniox-cli:` là thứ phân biệt hai loại, và chỉ ref mang tiền tố mới được dò để dùng lại job cũ.
+- **dùng lại ≠ `--keep`**: dùng lại nói về job **đã có trước lượt chạy này**; `--keep` nói về việc giữ job lại **sau** lượt chạy. Job dùng lại vẫn bị dọn nếu không có `--keep`.

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import __version__, media, subtitles, update
+from . import __version__, fingerprint, media, subtitles, update
 
 STT_DEFAULT_MODEL = "stt-async-v5"
 
@@ -471,6 +471,148 @@ def _try_destroy(client, transcription_id: str, quiet: bool = False) -> None:
             eprint(f"cảnh báo: không dọn được transcription {transcription_id}: {e}")
 
 
+# --------------------------------------------------------------------------- #
+# Dò lại job cũ theo ref
+# --------------------------------------------------------------------------- #
+# Trần số bản ghi quét khi dò ref. `stt list` không lọc được theo
+# `client_reference_id` (API chỉ nhận `limit` và `cursor`), nên dò ref là quét
+# tuần tự. Tài khoản dùng `--keep` lâu ngày có thể có hàng nghìn bản ghi; quét
+# hết là biến một tiện ích thành cái phanh. Chạm trần thì nói ra rồi tạo job mới.
+REF_SCAN_MAX = 500
+REF_SCAN_PAGE = 100   # số bản ghi mỗi trang, bằng mặc định của `stt list`
+
+# Trạng thái dùng lại được, kèm thứ tự ưu tiên. `error` và các trạng thái lạ
+# không có ở đây: không còn gì để cứu, và đoán thay người dùng là điều cấm.
+_REUSE_RANK = {"completed": 0, "processing": 1, "queued": 1}
+
+
+def scan_for_ref(items, ref: str, *, scan_max: int = REF_SCAN_MAX):
+    """Lọc bản ghi mang đúng `ref`, dừng ở `scan_max`. -> `(matches, hit_cap)`.
+
+    `items` là generator phân trang: chạm trần phải thôi kéo, vì mỗi trang là
+    một lời gọi mạng.
+    """
+    matches = []
+    seen = 0
+    for item in items:
+        seen += 1
+        if getattr(item, "client_reference_id", None) == ref:
+            matches.append(item)
+        if seen >= scan_max:
+            return matches, True
+    return matches, False
+
+
+def pick_reuse(matches):
+    """Job đáng dùng lại nhất: xong xuôi trước đang chạy, mới nhất trước cũ hơn.
+
+    Không giả định `stt list` trả về theo thứ tự nào, và không đòi có
+    `created_at`: job vừa tạo thì trường đó còn trống.
+    """
+    ranked = [(_REUSE_RANK[t.status], t) for t in matches if t.status in _REUSE_RANK]
+    if not ranked:
+        return None
+    best = min(rank for rank, _ in ranked)
+    return _newest([t for rank, t in ranked if rank == best])
+
+
+def _newest(items):
+    """Bản ghi mới nhất. `created_at` vắng mặt thì xếp sau, không nổ."""
+    if not items:
+        return None
+    dated = [x for x in items if getattr(x, "created_at", None)]
+    return max(dated, key=lambda x: x.created_at) if dated else items[0]
+
+
+def resolve_ref(args, src: dict, model: str, cfg) -> str | None:
+    """Ref gắn cho lần chạy này: nhãn người dùng đặt, hoặc vân tay tự sinh.
+
+    Chỉ file local mới có vân tay. URL thì nội dung đổi được dưới chân mình mà
+    CLI không hề biết, `--file-id` thì đã upload xong rồi: cả hai đều không cho
+    một danh tính vừa rẻ vừa đáng tin. Ở đó muốn có ref thì đặt tay bằng `--ref`.
+    """
+    if getattr(args, "ref", None):
+        if args.no_ref:
+            die("--ref và --no-ref ngược nhau; chọn một")
+        return args.ref
+    if args.no_ref:
+        return None
+    path = src.get("file")
+    if not path:
+        return None
+    try:
+        return fingerprint.compute_ref(Path(path), model=model, config=cfg)
+    except OSError as e:
+        # Không đọc được để băm thì vẫn upload được (SDK mở lại file sau). Mất
+        # ref là mất một tiện ích, không phải mất lượt chạy.
+        eprint(f"cảnh báo: không lấy được vân tay của '{path}' ({e}); chạy tiếp không có ref.")
+        return None
+
+
+def _lookup_ref(client, ref: str):
+    """Tìm job hoặc file đã có mang đúng `ref`. -> `(transcription|None, file_id|None)`.
+
+    Nuốt mọi lỗi thay vì `die()`: dò lại chỉ là đường tắt tiết kiệm tiền. Để nó
+    làm hỏng lượt chạy là biến `transcribe` thành kém tin cậy hơn lúc chưa có nó.
+    Ngoại lệ có chủ đích với quy ước "lỗi phải đi qua `die()`".
+    """
+    try:
+        matches, capped = scan_for_ref(client.stt.list_all(limit=REF_SCAN_PAGE), ref)
+        found = pick_reuse(matches)
+        if found is not None:
+            return found, None
+        if capped:
+            eprint(
+                f"lưu ý: đã quét {REF_SCAN_MAX} transcription gần nhất mà chưa thấy ref này "
+                f"(API không lọc được theo ref); coi như chưa có và tạo job mới."
+            )
+        files, _ = scan_for_ref(client.files.list_all(limit=REF_SCAN_PAGE), ref)
+        orphan = _newest(files)
+        return None, (orphan.id if orphan else None)
+    except Exception as e:  # noqa: BLE001 - xem docstring
+        eprint(f"cảnh báo: không dò lại được ref ({type(e).__name__}: {e}); tạo job mới.")
+        return None, None
+
+
+def _reuse_or_create(client, args, src: dict, model: str, cfg, ref: str | None):
+    """Job để chờ: dùng lại job cũ trùng vân tay nếu có, không thì tạo mới.
+
+    Chỉ dò khi ref mang tiền tố `soniox-cli:`, bất kể do CLI sinh hay người dùng
+    gõ lại. Tiền tố là thứ duy nhất phân biệt "chuỗi này mang ngữ nghĩa danh tính"
+    với "chuỗi này là nhãn": Soniox nói rõ `client_reference_id` "does not need to
+    be unique", nên dò theo một nhãn thường rồi dùng lại là đoán mò.
+    """
+    if ref and not args.no_reuse and fingerprint.is_auto_ref(ref):
+        found, file_id = _lookup_ref(client, ref)
+        if found is not None:
+            eprint(
+                f"dùng lại transcription {found.id} (status {found.status}): đã có job "
+                f"trùng đúng vân tay file + config này, khỏi upload và phiên âm lại."
+            )
+            if not args.keep and not args.no_wait:
+                # `--no-wait` không dọn gì cả, nhắc `--keep` ở đó là nói sai.
+                eprint("  (lấy xong vẫn dọn như thường lệ; thêm --keep để giữ lại)")
+            return found
+        if file_id:
+            # Bị giết giữa lúc tạo transcription: file đã nằm trên Soniox rồi.
+            eprint(f"dùng lại file đã upload {file_id}: trùng đúng vân tay, khỏi upload lần nữa.")
+            src = {"file_id": file_id}
+
+    with _upload_ready(args, src) as ready:
+        tr = client.stt.transcribe(
+            model=model, config=cfg, client_reference_id=ref, **ready
+        )
+        # In ngay tại đây, không dời ra sau khối `with`: id tồn tại từ giây này,
+        # mà khối `with` còn phải dọn file tạm trước khi thoát. Vô điều kiện, kể
+        # cả trên đường hạnh phúc: id là dữ kiện, không phải artifact của nhánh
+        # lỗi. SIGKILL, mất điện, harness teardown không chạy `except` nào cả.
+        eprint(
+            f"transcription {tr.id} đã tạo; lấy lại bất cứ lúc nào: "
+            f"soniox stt transcript {tr.id}"
+        )
+    return tr
+
+
 def _reject_output_conflict(args) -> None:
     """`--subtitles` và `--timestamps` là hai cách dựng khác nhau cho cùng một đầu ra.
 
@@ -503,18 +645,14 @@ def cmd_stt_transcribe(args) -> None:
         die(f"{flag} cần transcript nên không dùng chung với --no-wait; "
             f"poll xong rồi chạy: soniox stt transcript <id> {flag}")
 
-    with _upload_ready(args, src) as src:
-        tr = client.stt.transcribe(
-            model=model, config=cfg, client_reference_id=args.ref, **src
-        )
-        # In ngay tại đây, không dời ra sau khối `with`: id tồn tại từ giây này,
-        # mà khối `with` còn phải dọn file tạm trước khi thoát. Vô điều kiện, kể
-        # cả trên đường hạnh phúc: id là dữ kiện, không phải artifact của nhánh
-        # lỗi. SIGKILL, mất điện, harness teardown không chạy `except` nào cả.
-        eprint(
-            f"transcription {tr.id} đã tạo; lấy lại bất cứ lúc nào: "
-            f"soniox stt transcript {tr.id}"
-        )
+    ref = resolve_ref(args, src, model, cfg)
+    if ref:
+        # Trước cả lúc upload, vô điều kiện. Bị giết giữa lúc upload thì
+        # transcription còn chưa tồn tại và chưa có id nào để in; lúc đó ref là
+        # đường duy nhất tìm lại file mồ côi. Xem ADR-0010.
+        eprint(f"ref {ref}; tìm lại: soniox stt list --all, soniox files list --all")
+
+    tr = _reuse_or_create(client, args, src, model, cfg, ref)
 
     if args.no_wait:
         emit(
@@ -758,6 +896,13 @@ def cmd_files_delete_all(args) -> None:
     emit(args, {"deleted": total}, f"đã xóa {total} file")
 
 
+def _file_row(f) -> str:
+    """Có ref thì in ra: file mồ côi (upload xong, transcription chưa kịp tạo)
+    chỉ còn ref làm chỗ bám."""
+    ref = getattr(f, "client_reference_id", None)
+    return f"{f.id}  {f.filename}" + (f"  ref={ref}" if ref else "")
+
+
 def cmd_files_list(args) -> None:
     client = get_client()
     rows = _rows(client, "files", args)
@@ -766,7 +911,7 @@ def cmd_files_list(args) -> None:
     emit(
         args,
         rows,
-        lambda d: "\n".join(f"{f.id}  {f.filename}" for f in d) or "(chưa có file nào)",
+        lambda d: "\n".join(_file_row(f) for f in d) or "(chưa có file nào)",
     )
 
 
@@ -1228,7 +1373,18 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument(
         "--ref",
         help="nhãn tự đặt (client_reference_id) gắn cho cả file lẫn transcription, "
-             "để tìm lại job bằng `stt list` sau khi mất ngữ cảnh",
+             "để tìm lại job bằng `stt list` sau khi mất ngữ cảnh. Đặt tay thì thay "
+             "cho ref tự sinh; chỉ ref mang tiền tố soniox-cli: mới được dò dùng lại",
+    )
+    tr.add_argument(
+        "--no-ref",
+        action="store_true",
+        help="không tự sinh ref theo vân tay file; job đi ra không mang nhãn nào",
+    )
+    tr.add_argument(
+        "--no-reuse",
+        action="store_true",
+        help="vẫn gắn ref tự sinh nhưng luôn tạo job mới, không dùng lại job cũ trùng ref",
     )
     tr.add_argument(
         "--keep",

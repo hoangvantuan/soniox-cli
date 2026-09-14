@@ -26,6 +26,7 @@ soniox auth check
 | `soniox stt transcribe <file\|url>`                              | Transcribe. By default **waits, prints the text, cleans up** on Soniox |
 | `soniox stt transcribe <x> --no-wait`                            | Returns the `id` within seconds; poll later. Use when the process may not survive the wait |
 | `soniox stt transcribe <x> --subtitles srt\|vtt`                 | Emit **subtitles**                                                     |
+| `soniox stt transcribe <x>` (re-run)                             | Reuses a job with the same input fingerprint: no re-upload, no second charge |
 | `soniox stt transcribe <x> --timestamps`                         | Plain text broken into **speaking turns**, each line starting with `[HH:MM:SS]` |
 | `soniox stt get\|transcript\|list\|count\|delete\|delete-all`    | Manage transcriptions                                                  |
 | `soniox stt transcript <id>`                                     | Fetch the transcript of an existing job. Speakers and translations are rendered automatically |
@@ -90,11 +91,15 @@ A dead local process does not kill the job. Get it back:
 ```bash
 soniox stt list                                   # id, status, created_at, duration, filename
 soniox stt list --json | jq '.[] | select(.client_reference_id=="meeting-2026-09-13")'
+soniox files list --all                           # uploaded files, with their ref
 soniox stt transcript <id> -o /tmp/out.txt        # pull the transcript
 soniox stt transcript <id> --destroy              # pull it, then clean up transcription + file
 ```
 
-- `--ref <label>` at `transcribe` time tags **both the uploaded file and the transcription**, which is the only way back if the process died mid-upload, before any id existed. Without it, match on `created_at` + `filename` + duration by eye.
+- **Just re-run the same command.** `transcribe` derives a deterministic ref from the input (filename + size + first and last 1 MB + model + config), looks it up on Soniox first, and reuses a matching job instead of re-uploading and paying to transcribe again. Nothing has to be remembered between sessions: the key is recomputed from the file.
+- The ref is printed to stderr **before the upload starts**, so a process killed mid-upload — when no transcription id exists yet — is still recoverable via `soniox files list --all`. The next run finds that orphaned file by ref and skips the upload.
+- `--no-reuse` keeps the ref but always creates a new job; `--no-ref` disables it; `--ref <label>` sets your own label instead — a plain label is never looked up, since Soniox does not require `client_reference_id` to be unique, though passing a `soniox-cli:...` ref back verbatim is. Auto-ref covers local files only, not URLs or `--file-id`.
+- A reused job still obeys auto-destroy: pass `--keep` to hold on to it.
 - **`--no-wait` has no auto-destroy.** Nothing is cleaned up for you. Finish with `--destroy` or the quota fills up quietly.
 - Ctrl-C and SIGTERM clean up local temp files and exit, but **never delete the remote job**. The id was already printed to stderr when the job was created. The leftover job is the thing that saves you; treat it as an asset, not as garbage.
 - Transcriptions are deleted by Soniox 30 days after creation. That is the recovery window.
