@@ -245,3 +245,130 @@ def test_normalize_chiu_duoc_object_khong_phai_dict():
         "text": "a", "start_ms": 5, "end_ms": 10,
         "speaker": None, "translation_status": None, "language": None,
     }
+
+
+# --------------------------------------------------------------------------- #
+# build_turns: lượt nói. Chỉ ngắt bởi khoảng lặng và đổi người nói.
+# --------------------------------------------------------------------------- #
+def test_luot_khong_cat_theo_max_chars():
+    """Lượt để đọc và grep, không có màn hình nào để tràn."""
+    toks = [tok(f"tu{i} ", i * 100, i * 100 + 100) for i in range(40)]
+    turns = S.build_turns(toks)
+    assert len(turns) == 1
+    assert len(turns[0].text) > S.DEFAULT_MAX_CHARS
+
+
+def test_luot_khong_cat_theo_do_dai_thoi_gian():
+    toks = [tok(f"t{i} ", i * 1000, i * 1000 + 1000) for i in range(20)]
+    turns = S.build_turns(toks)
+    assert len(turns) == 1
+    assert turns[0].end_ms - turns[0].start_ms > S.DEFAULT_MAX_DURATION_MS
+
+
+def test_luot_khong_cat_o_het_cau():
+    toks = [
+        tok("Câu thứ nhất khá dài để vượt ngưỡng. ", 0, 1000),
+        tok("Câu thứ hai cũng vậy.", 1000, 2000),
+    ]
+    turns = S.build_turns(toks)
+    assert len(turns) == 1
+
+
+def test_luot_cat_khi_im_lang_qua_nguong():
+    toks = [tok("A", 0, 100), tok("B", 100 + S.DEFAULT_GAP_MS + 1, 1500)]
+    assert [t.text for t in S.build_turns(toks)] == ["A", "B"]
+
+
+def test_luot_cat_khi_doi_nguoi_noi():
+    toks = [tok("A ", 0, 100, speaker="1"), tok("B", 100, 200, speaker="2")]
+    turns = S.build_turns(toks, with_speaker=True)
+    assert [(t.speaker, t.text) for t in turns] == [("1", "A"), ("2", "B")]
+
+
+def test_luot_khong_bat_speaker_thi_khong_cat_theo_nguoi_noi():
+    toks = [tok("A ", 0, 100, speaker="1"), tok("B", 100, 200, speaker="2")]
+    assert len(S.build_turns(toks, with_speaker=False)) == 1
+
+
+def test_luot_khong_co_token_thi_khong_no():
+    assert S.build_turns([]) == []
+
+
+def test_luot_tach_ban_dich_khoi_nguyen_ban():
+    """Token dịch mượn mốc của đoạn gốc nên không có khoảng lặng nào để cắt.
+
+    Ranh giới gốc/dịch phải cắt bằng `_runs`, nếu không hai bên dính thành một
+    dòng: nguyên bản nối thẳng vào bản dịch.
+    """
+    toks = [
+        tok("Hello", 0, 3000, status="original"),
+        tok("Xin chào", 0, 0, status="translation"),
+    ]
+    turns = S.build_turns(toks)
+    assert [(t.status, t.text) for t in turns] == [
+        ("original", "Hello"),
+        ("translation", "Xin chào"),
+    ]
+    # Mượn mốc của đoạn gốc liền trước, không nằm ở giây 0 một cách vô nghĩa.
+    assert turns[1].start_ms == 0 and turns[1].end_ms == 3000
+
+
+def test_luot_giu_ngon_ngu_ban_dich():
+    toks = [
+        {"text": "Hello", "start_ms": 0, "end_ms": 1000, "translation_status": "original"},
+        {
+            "text": "Xin chào",
+            "start_ms": 0,
+            "end_ms": 0,
+            "translation_status": "translation",
+            "language": "vi",
+        },
+    ]
+    assert S.build_turns(toks)[1].language == "vi"
+
+
+# --------------------------------------------------------------------------- #
+# render_turns
+# --------------------------------------------------------------------------- #
+def test_render_turns_dat_moc_dau_dong():
+    toks = [
+        tok("Xin chào", 0, 1000, speaker="1"),
+        tok("Vâng", 754_000, 755_000, speaker="2"),
+    ]
+    out = S.render_turns(S.build_turns(toks, with_speaker=True))
+    assert out == "[00:00:00] Speaker 1: Xin chào\n[00:12:34] Speaker 2: Vâng"
+
+
+def test_render_turns_khong_co_speaker_thi_chi_co_moc():
+    assert S.render_turns(S.build_turns([tok("A", 0, 100)])) == "[00:00:00] A"
+
+
+def test_render_turns_gan_nhan_ban_dich():
+    """Giữ đúng nhãn mà text thuần đang dùng, chỉ thêm mốc thời gian."""
+    toks = [
+        {
+            "text": "Hello",
+            "start_ms": 0,
+            "end_ms": 1000,
+            "speaker": "1",
+            "translation_status": "original",
+        },
+        {
+            "text": "Xin chào",
+            "start_ms": 0,
+            "end_ms": 0,
+            "speaker": "1",
+            "translation_status": "translation",
+            "language": "vi",
+        },
+    ]
+    out = S.render_turns(S.build_turns(toks, with_speaker=True))
+    assert out == "[00:00:00] [Speaker 1] Hello\n[00:00:00] [Speaker 1] → vi: Xin chào"
+
+
+def test_render_turns_rong():
+    assert S.render_turns([]) == ""
+
+
+def test_format_timestamp_bo_mili():
+    assert S.format_timestamp(754_321, millis=False) == "00:12:34"

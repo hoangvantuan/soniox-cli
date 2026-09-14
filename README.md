@@ -60,6 +60,7 @@ Gỡ: `uv tool uninstall soniox-cli`
 |---|---|
 | `soniox stt transcribe <file\|url>` | Phiên âm; **video được tách audio trước khi upload**; mặc định **chờ xong + tự dọn** file/transcription trên Soniox |
 | `soniox stt transcribe <x> --subtitles srt` | Xuất **phụ đề SRT / VTT** |
+| `soniox stt transcribe <x> --timestamps` | Text ngắt dòng theo **lượt nói**, mỗi dòng mở đầu bằng `[HH:MM:SS]` |
 | `soniox stt get\|list\|transcript\|count\|delete\|delete-all` | Quản lý transcription |
 | `soniox stt transcript <id> --destroy` | Kéo transcript về rồi dọn cả transcription lẫn file |
 | `soniox files upload\|list\|get\|count\|delete\|delete-all` | File audio đã upload |
@@ -135,7 +136,7 @@ Cần `ffmpeg` **chỉ khi** đầu vào là video. macOS: `brew install ffmpeg`
 
 ## Đường ra: stdout hay file
 
-Mặc định mọi kết quả in ra **stdout**, không tạo file nào. `-o <file>` ghi thẳng ra file (tự tạo thư mục cha), dùng được cho cả text thuần lẫn `--subtitles`. Riêng `tts generate` thì `-o` là bắt buộc vì đầu ra là nhị phân.
+Mặc định mọi kết quả in ra **stdout**, không tạo file nào. `-o <file>` ghi thẳng ra file (tự tạo thư mục cha), dùng được cho cả text thuần, `--timestamps` lẫn `--subtitles`. Riêng `tts generate` thì `-o` là bắt buộc vì đầu ra là nhị phân.
 
 Với bản ghi dài, nên dùng `-o` rồi đọc phần cần thay vì đổ hết ra màn hình. Quên `-o` mà kết quả dài hơn 20.000 ký tự thì CLI nhắc một dòng ở stderr (stderr nên không ảnh hưởng `|` và `>`). `--json` cũng đi qua đúng đường này ở `stt transcribe` (khi có chờ kết quả) và `stt transcript`, nên `-o` và lời nhắc đều có tác dụng. Các lệnh còn lại, kể cả `transcribe --no-wait --json`, in JSON thẳng ra stdout: output ngắn nên dùng `>` là đủ.
 
@@ -153,6 +154,21 @@ soniox stt transcript <id> --destroy             # kéo về xong dọn luôn, c
 
 `--no-wait` **không** có auto-destroy. Dọn tay bằng `stt transcript <id> --destroy`, hoặc `stt delete <id> --destroy`.
 
+## Mốc thời gian trong text
+
+`transcript.text` của Soniox là **một dòng duy nhất**: bản ghi 2h40 thành khoảng 140.000 ký tự trên một dòng, không `grep -n` được, không `diff` được. `--timestamps` (có ở cả `stt transcribe` và `stt transcript`) ngắt dòng theo **lượt**: chuỗi token liên tiếp không bị ngắt bởi khoảng lặng quá 0.7 giây, cũng không bị ngắt bởi việc đổi người nói.
+
+```
+[00:12:34] Speaker 1: Chào mọi người, hôm nay ta chốt ngân sách.
+[00:13:02] Speaker 2: Vâng, tôi đồng ý.
+```
+
+Chỉ in mốc **bắt đầu** lượt, không in cả khoảng: grep được, hợp quy ước biên bản họp, in cả khoảng chỉ thêm nhiễu. Có bản dịch thì mỗi lượt dịch là một dòng riêng, giữ nguyên nhãn `→ <ngôn ngữ>:` của text thuần. `--flat` bỏ nhãn `Speaker N:`, lượt khi đó chỉ ngắt theo khoảng lặng.
+
+**Lượt** là anh em với **cue** của phụ đề: cùng cách gom token, khác chỗ dừng. Cue phải nằm vừa màn hình nên bị chặn bởi `--subtitle-max-chars`, bởi 6 giây và bởi dấu kết câu; lượt để đọc và `grep` nên không chặn gì cả.
+
+`--timestamps` không dùng chung với `--subtitles` (hai cách dựng khác nhau cho cùng một đầu ra) và cũng không dùng chung với `--no-wait` (chưa có transcript thì chưa có token).
+
 ## Phụ đề
 
 `--subtitles srt|vtt` có ở cả `stt transcribe` và `stt transcript`. Token của Soniox nhỏ hơn từ nên CLI gom lại thành **cue**, cắt khi đổi người nói, quá `--subtitle-max-chars` (mặc định 84), quá 6 giây, im lặng quá 0.7 giây, hoặc hết câu.
@@ -168,7 +184,7 @@ soniox stt transcript <id> --destroy             # kéo về xong dọn luôn, c
 
 Soniox trả token bản dịch **không kèm mốc thời gian**; CLI mượn khoảng thời gian của đoạn nguyên bản tương ứng rồi chia theo độ dài ký tự. Chi tiết và đánh đổi: [ADR-0005](docs/adr/0005-phu-de-muon-moc-thoi-gian-ban-dich.md).
 
-`--subtitles` không dùng chung với `--no-wait` (chưa có transcript thì chưa dựng được phụ đề).
+`--subtitles` không dùng chung với `--no-wait` (chưa có transcript thì chưa dựng được phụ đề). Cũng không dùng chung với `--timestamps`.
 
 ## Hành vi đáng lưu ý
 
@@ -179,7 +195,7 @@ Soniox trả token bản dịch **không kèm mốc thời gian**; CLI mượn k
   - Mất kết nối giữa lúc chờ: CLI thử lại tối đa 5 lần (nghỉ 5/10/20/40/60 giây) rồi mới bỏ cuộc, và khi bỏ cuộc vẫn in id ra. Mạng hỏng ở máy bạn không nói gì về job trên Soniox. Xem [ADR-0009](docs/adr/0009-cli-tu-nuoi-vong-lap-cho.md).
   - Ctrl-C hoặc `SIGTERM` giữa chừng: CLI dọn file tạm cục bộ rồi in id, **không xóa job trên Soniox**. Hủy chờ không phải hủy job. Xem [ADR-0008](docs/adr/0008-tin-hieu-huy-khong-xoa-du-lieu-tu-xa.md).
   - `--ref <nhãn>` gắn nhãn tự đặt cho cả file lẫn transcription, để tìm lại bằng `stt list` khi mất sạch ngữ cảnh.
-- **Người nói và bản dịch tự hiện ra.** Cả `transcribe` lẫn `transcript` đều gắn nhãn `Speaker N:` khi token có speaker, và xen kẽ bản dịch khi có. `--flat` tắt nhãn Speaker (bản dịch vẫn giữ). `--group-speakers` là cờ cũ, nay không còn tác dụng, giữ lại cho tương thích.
+- **Người nói và bản dịch tự hiện ra.** Cả `transcribe` lẫn `transcript` đều gắn nhãn `Speaker N:` khi token có speaker, và xen kẽ bản dịch khi có. `--flat` tắt nhãn Speaker (bản dịch vẫn giữ). `--group-speakers` là cờ cũ, nay không còn tác dụng, giữ lại cho tương thích. `--timestamps` thêm mốc `[HH:MM:SS]` và ngắt dòng theo lượt nói.
 - **Định dạng TTS** suy từ đuôi `-o`: `.wav`, `.mp3`, `.flac`, `.opus`, `.aac`, `.pcm`. Đuôi lạ sẽ báo lỗi chứ không âm thầm ghi byte WAV vào file sai đuôi; muốn ép thì dùng `--format`.
 - **`--speed`** trong khoảng 0.7 đến 1.3, kiểm tra ngay phía client.
 - **Tham số ít dùng**: truyền qua `--config-json '{...}'`.

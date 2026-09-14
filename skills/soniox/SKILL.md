@@ -26,6 +26,7 @@ soniox auth check
 | `soniox stt transcribe <file\|url>`                              | Transcribe. By default **waits, prints the text, cleans up** on Soniox |
 | `soniox stt transcribe <x> --no-wait`                            | Returns the `id` within seconds; poll later. Use when the process may not survive the wait |
 | `soniox stt transcribe <x> --subtitles srt\|vtt`                 | Emit **subtitles**                                                     |
+| `soniox stt transcribe <x> --timestamps`                         | Plain text broken into **speaking turns**, each line starting with `[HH:MM:SS]` |
 | `soniox stt get\|transcript\|list\|count\|delete\|delete-all`    | Manage transcriptions                                                  |
 | `soniox stt transcript <id>`                                     | Fetch the transcript of an existing job. Speakers and translations are rendered automatically |
 | `soniox stt transcript <id> --destroy`                           | Same, then clean up the transcription **and** its file                 |
@@ -103,12 +104,14 @@ soniox stt transcript <id> --destroy              # pull it, then clean up trans
 By default the result goes to **stdout**, which is fine for short clips. For long recordings, dumping the whole transcript into context is wasteful: use `-o`, then read only what you need.
 
 ```bash
-soniox stt transcribe meeting-2h.mp4 -o /tmp/meeting.txt
+soniox stt transcribe meeting-2h.mp4 --timestamps -o /tmp/meeting.txt
 wc -l /tmp/meeting.txt && head -40 /tmp/meeting.txt   # preview before deciding
 grep -n "budget" /tmp/meeting.txt                     # go straight to what you need
 ```
 
-`-o` works for plain text and for `--subtitles`, and the CLI creates parent directories. If `-o` is missing and the result is longer than 20,000 characters, the CLI prints a one-line hint on stderr.
+**Use `--timestamps` for anything you intend to grep.** Without it the transcript is a *single line* (Soniox returns `transcript.text` that way), so `wc -l` says 0, `grep -n` gives one useless hit and `diff` is unusable. `--timestamps` breaks the text into **turns** (a run of tokens with no silence over 0.7s and no speaker change) and prefixes each with `[HH:MM:SS]`, so `grep -n` lands on a readable line you can seek to in the audio.
+
+`-o` works for plain text, `--timestamps` and `--subtitles`, and the CLI creates parent directories. If `-o` is missing and the result is longer than 20,000 characters, the CLI prints a one-line hint on stderr.
 
 **Rule**: audio longer than roughly 10 minutes, or when only a summary / one excerpt is needed, write to a file first. Put temp files in `/tmp` and delete them afterwards.
 
@@ -176,7 +179,7 @@ soniox concurrency                      # concurrent sessions and limits, to dia
 ## Important notes
 
 - **Auto-destroy**: `transcribe` deletes the file and the transcription from Soniox once the text is retrieved (keeps the quota clear). Use `--keep` if `get`/`transcript` will be needed later. It only fires on a **completed** run: `--no-wait`, a timeout, Ctrl-C and SIGTERM all leave the job in place on purpose, and the CLI prints the id plus the commands to fetch or clean up.
-- **Speakers and translations render themselves.** Both `transcribe` and `transcript` label speakers when the tokens carry them, and interleave translations when present. Use `--flat` to suppress speaker labels. (`--group-speakers` is a deprecated no-op kept for compatibility.)
+- **Speakers and translations render themselves.** Both `transcribe` and `transcript` label speakers when the tokens carry them, and interleave translations when present. Use `--flat` to suppress speaker labels. (`--group-speakers` is a deprecated no-op kept for compatibility.) `--timestamps` adds an `[HH:MM:SS]` mark and breaks the text into turns; it cannot be combined with `--subtitles` or `--no-wait`.
 - **STT input**: a local audio or video file, `--file-id`, or a URL that **downloads the audio file directly**. Video can only be extracted from a local file; for a URL, Soniox downloads on its side, so fetch it locally first to extract. YouTube / Drive / web page links will break (Soniox gets HTML back and reports "Invalid audio file"): download the file first and pass the local path. Do not pass `--file-id` together with a file or URL.
 - **Subtitles**: `--subtitles srt|vtt`, add `-o <file>` to write to a file. `--subtitle-track` picks `auto` (default, uses the translation when there is one), `original`, `translation`, or `both` (bilingual). Cannot be combined with `--no-wait`.
 - **Long files**: timeout is rarely the problem, **process lifetime is**. Soniox is fast (one measurement, 2026-09-13: 2h40m of audio finished in under 5 minutes, so the 600s default was never close to being hit); the local time goes into extracting and uploading. What actually kills a run is the local process dying. See "Waiting" above.

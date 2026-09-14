@@ -24,6 +24,7 @@ CLI **không giữ state**. Mọi thứ bền vững đều nằm trên Soniox; 
 | **language hints** | Gợi ý ngôn ngữ cho STT, không phải ràng buộc cứng. |
 | **tách audio** | Bỏ luồng hình khỏi file video trước khi upload, bằng cách copy nguyên luồng audio. Không phải "convert", không mã hóa lại. |
 | **cue** | Một khối phụ đề: khoảng thời gian cộng đoạn text hiện lên màn hình. Token Soniox nhỏ hơn từ nên phải gom lại thành cue. |
+| **lượt** | Chuỗi token liên tiếp không bị ngắt bởi khoảng lặng vượt ngưỡng, cũng không bị ngắt bởi việc đổi speaker. Đơn vị ngắt dòng của `--timestamps`. |
 | **track** | Luồng token dùng cho phụ đề: `original`, `translation`, `both`, hay `auto` (có dịch thì lấy dịch). |
 | **escape hatch** | `--config-json`: đường truyền thẳng tham số mà CLI chưa có cờ riêng. Xem [ADR-0004](docs/adr/0004-loc-config-json-bat-doi-xung.md). |
 | **mồ côi** | Job mà **id của nó không tồn tại ở đâu ngoài Soniox**. Không phải "job còn sót lại": job còn sót mà biết id là tài sản phục hồi, không phải rác. |
@@ -34,6 +35,7 @@ CLI **không giữ state**. Mọi thứ bền vững đều nằm trên Soniox; 
 
 ## Phân biệt dễ nhầm
 
+- **lượt ≠ cue**: cùng một cách gom token, khác mục đích. Cue phục vụ màn hình nên bị chặn bởi `max_chars`, độ dài và dấu kết câu; lượt phục vụ đọc và `grep` nên không chặn gì ngoài khoảng lặng và đổi speaker.
 - **transcription ≠ transcript**: một bên là công việc, một bên là kết quả. `stt get` trả về transcription; `stt transcript` trả về transcript.
 - **delete ≠ destroy**: xem bảng trên. Nhầm hai từ này làm đầy quota file mà không ai nhận ra.
 - **`--keep` không phải "lưu về máy"**: nó nghĩa là *giữ lại trên Soniox*, không tự dọn.

@@ -471,6 +471,17 @@ def _try_destroy(client, transcription_id: str, quiet: bool = False) -> None:
             eprint(f"cảnh báo: không dọn được transcription {transcription_id}: {e}")
 
 
+def _reject_output_conflict(args) -> None:
+    """`--subtitles` và `--timestamps` là hai cách dựng khác nhau cho cùng một đầu ra.
+
+    Gọi trước mọi thao tác mạng: dừng sau khi `transcribe` đã dọn transcription
+    thì người dùng mất kết quả vì một lỗi gõ cờ.
+    """
+    if getattr(args, "subtitles", None) and getattr(args, "timestamps", False):
+        die("--subtitles và --timestamps không dùng chung: một bên dựng phụ đề, "
+            "một bên dựng text có mốc thời gian. Chọn một.")
+
+
 def cmd_stt_transcribe(args) -> None:
     """Tạo transcription rồi (mặc định) chờ xong, in text và dọn khỏi Soniox.
 
@@ -481,14 +492,16 @@ def cmd_stt_transcribe(args) -> None:
     Tự chờ bằng `wait_for_transcription` thay vì `client.stt.wait` để có nhịp báo
     sống ra stderr: `wait` không nhận callback. Xem ADR-0009.
     """
+    _reject_output_conflict(args)
     client = get_client()
     src = resolve_audio_input(args)
     cfg = build_stt_config(args)
     model = args.model or STT_DEFAULT_MODEL
 
-    if args.no_wait and args.subtitles:
-        die("--subtitles cần transcript nên không dùng chung với --no-wait; "
-            "poll xong rồi chạy: soniox stt transcript <id> --subtitles " + args.subtitles)
+    if args.no_wait and (args.subtitles or args.timestamps):
+        flag = f"--subtitles {args.subtitles}" if args.subtitles else "--timestamps"
+        die(f"{flag} cần transcript nên không dùng chung với --no-wait; "
+            f"poll xong rồi chạy: soniox stt transcript <id> {flag}")
 
     with _upload_ready(args, src) as src:
         tr = client.stt.transcribe(
@@ -584,6 +597,15 @@ def emit_transcript(args, transcript, *, diarize: bool) -> None:
             ),
         )
         return
+    if getattr(args, "timestamps", False):
+        tokens = getattr(transcript, "tokens", None) or []
+        if not tokens:
+            die("transcript không có token nên không gắn được mốc thời gian")
+        write_out(
+            args,
+            subtitles.render_turns(subtitles.build_turns(tokens, with_speaker=diarize)),
+        )
+        return
     write_out(args, format_transcript_text(transcript, diarize))
 
 
@@ -674,6 +696,7 @@ def cmd_stt_transcript(args) -> None:
     và không có nhãn speaker, nên đi tắt qua nó là lệnh cứu hộ trả về kết quả
     kém hơn `stt transcribe`. Xem ADR-0008.
     """
+    _reject_output_conflict(args)
     client = get_client()
     t = client.stt.get_transcript(args.id)
     if args.group_speakers:
@@ -1160,6 +1183,11 @@ def _add_output_flags(p: argparse.ArgumentParser) -> None:
         type=int,
         default=subtitles.DEFAULT_MAX_CHARS,
         help=f"số ký tự tối đa mỗi cue (mặc định {subtitles.DEFAULT_MAX_CHARS})",
+    )
+    p.add_argument(
+        "--timestamps",
+        action="store_true",
+        help="text ngắt dòng theo lượt nói, mỗi dòng mở đầu bằng [HH:MM:SS]",
     )
     p.add_argument(
         "--flat",

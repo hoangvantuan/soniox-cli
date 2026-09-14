@@ -1,11 +1,15 @@
-"""Dựng phụ đề SRT / WebVTT từ token của Soniox.
+"""Dựng phụ đề SRT / WebVTT và text theo lượt từ token của Soniox.
 
 Thuần logic, không chạm mạng: nhận danh sách token (mỗi token có `text`,
 `start_ms`, `end_ms`, tùy chọn `speaker` và `translation_status`) rồi trả về
-chuỗi phụ đề.
+chuỗi phụ đề, hoặc text ngắt dòng theo lượt nói.
 
 Việc khó không nằm ở định dạng mà ở **cắt cue**: token của Soniox nhỏ hơn từ
 (ví dụ "Wh" + "at"), nên phải gom lại thành câu đọc kịp trên màn hình.
+
+**Cue** và **lượt** dùng chung một vòng gom token, khác nhau ở chỗ dừng: cue
+phục vụ màn hình nên bị chặn bởi số ký tự, độ dài và dấu kết câu; lượt phục vụ
+đọc và `grep` nên chỉ ngắt khi đổi người nói hoặc im lặng quá ngưỡng.
 """
 
 from __future__ import annotations
@@ -31,6 +35,22 @@ class Cue:
     end_ms: int
     text: str
     speaker: str | None = None
+
+
+@dataclass
+class Turn:
+    """Một lượt nói: cue không bị giới hạn màn hình, có thêm nhãn bản dịch.
+
+    Giữ riêng `status` và `language` vì lượt được in thành text chứ không lên
+    màn hình, nên phải tự gắn nhãn `→ <lang>:` như đường text thuần đang làm.
+    """
+
+    start_ms: int
+    end_ms: int
+    text: str
+    speaker: str | None = None
+    status: str = "original"
+    language: str | None = None
 
 
 def _get(tok: Any, name: str, default=None):
@@ -135,15 +155,20 @@ def select_tracks(tokens: list[Any], track: str) -> list[list[Any]]:
 def build_cues(
     tokens: list[Any],
     *,
-    max_chars: int = DEFAULT_MAX_CHARS,
-    max_duration_ms: int = DEFAULT_MAX_DURATION_MS,
+    max_chars: int | None = DEFAULT_MAX_CHARS,
+    max_duration_ms: int | None = DEFAULT_MAX_DURATION_MS,
     gap_ms: int = DEFAULT_GAP_MS,
     with_speaker: bool = False,
+    sentence_break: bool = True,
 ) -> list[Cue]:
     """Gom token liên tiếp thành cue.
 
     Cắt cue khi gặp bất kỳ điều nào: đổi người nói, quá `max_chars`, quá
     `max_duration_ms`, im lặng quá `gap_ms`, hoặc hết câu mà cue đã đủ dài.
+
+    Ba ràng buộc cuối chỉ có nghĩa khi cue phải nằm vừa một màn hình. `None`
+    cho `max_chars` / `max_duration_ms` và `sentence_break=False` tắt chúng đi,
+    còn lại đúng hai chỗ cắt của một **lượt**: đổi người nói và khoảng lặng.
     """
     cues: list[Cue] = []
     buf: list[str] = []
@@ -166,8 +191,8 @@ def build_cues(
 
         if buf:
             pending = "".join(buf).strip()
-            too_long = len(pending) + len(text) > max_chars
-            too_slow = t_end - start > max_duration_ms
+            too_long = max_chars is not None and len(pending) + len(text) > max_chars
+            too_slow = max_duration_ms is not None and t_end - start > max_duration_ms
             silent = t_start - end > gap_ms
             if t_speaker != speaker or too_long or too_slow or silent:
                 flush()
@@ -177,7 +202,7 @@ def build_cues(
         buf.append(text)
         end = t_end
 
-        if "".join(buf).strip().endswith(_SENTENCE_END):
+        if sentence_break and "".join(buf).strip().endswith(_SENTENCE_END):
             if len("".join(buf).strip()) >= _MIN_CHARS_FOR_SENTENCE_BREAK:
                 flush()
 
@@ -192,13 +217,17 @@ def merge_cues(streams: list[list[Cue]]) -> list[Cue]:
     return merged
 
 
-def format_timestamp(ms: int, *, sep: str) -> str:
-    """`ms` -> `HH:MM:SS<sep>mmm`. `sep` là ',' cho SRT, '.' cho VTT."""
+def format_timestamp(ms: int, *, sep: str = ",", millis: bool = True) -> str:
+    """`ms` -> `HH:MM:SS<sep>mmm`. `sep` là ',' cho SRT, '.' cho VTT.
+
+    `millis=False` trả về `HH:MM:SS`: mốc đầu lượt chỉ cần tới giây.
+    """
     ms = max(0, int(ms))
     hours, rest = divmod(ms, 3_600_000)
     minutes, rest = divmod(rest, 60_000)
-    seconds, millis = divmod(rest, 1000)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}{sep}{millis:03d}"
+    seconds, rest = divmod(rest, 1000)
+    clock = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{clock}{sep}{rest:03d}" if millis else clock
 
 
 def _cue_text(cue: Cue) -> str:
@@ -247,3 +276,71 @@ def render(
     ]
     cues = merge_cues(streams) if len(streams) > 1 else (streams[0] if streams else [])
     return render_srt(cues) if fmt == "srt" else render_vtt(cues)
+
+
+def build_turns(
+    tokens: list[Any],
+    *,
+    gap_ms: int = DEFAULT_GAP_MS,
+    with_speaker: bool = False,
+) -> list[Turn]:
+    """Gom token thành **lượt**: chỉ ngắt khi đổi người nói hoặc im lặng quá `gap_ms`.
+
+    Dùng lại đúng vòng gom của `build_cues`, tắt cả ba giới hạn phục vụ màn
+    hình. Ngưỡng im lặng giữ nguyên `DEFAULT_GAP_MS` của cue: cùng một cách gom
+    token thì cùng một ngưỡng, đổi sau là đổi một hằng số.
+
+    Ranh giới gốc / bản dịch cắt bằng `_runs` chứ không nhờ khoảng lặng: token
+    dịch mượn mốc thời gian của đoạn gốc liền trước, nên đứng cạnh nhau chúng
+    *lùi* về quá khứ chứ không hở ra khoảng nào để cắt. Giữ nguyên thứ tự token,
+    không sắp lại theo thời gian, để bản dịch vẫn nằm ngay sau đoạn gốc của nó.
+    """
+    turns: list[Turn] = []
+    for status, run in _runs(normalize_tokens(tokens)):
+        language = next((t["language"] for t in run if t["language"]), None)
+        turns += [
+            Turn(
+                start_ms=cue.start_ms,
+                end_ms=cue.end_ms,
+                text=cue.text,
+                speaker=cue.speaker,
+                status=status,
+                language=language,
+            )
+            for cue in build_cues(
+                run,
+                max_chars=None,
+                max_duration_ms=None,
+                gap_ms=gap_ms,
+                with_speaker=with_speaker,
+                sentence_break=False,
+            )
+        ]
+    return turns
+
+
+def _turn_label(turn: Turn, *, bracket_speaker: bool) -> str:
+    """Nhãn đứng giữa mốc thời gian và nội dung, y hệt nhãn của text thuần."""
+    speaker = ""
+    if turn.speaker:
+        speaker = (
+            f"[Speaker {turn.speaker}] " if bracket_speaker else f"Speaker {turn.speaker}: "
+        )
+    if turn.status == "translation":
+        return f"{speaker}→ {turn.language or 'dịch'}: "
+    return speaker
+
+
+def render_turns(turns: list[Turn]) -> str:
+    """Mỗi lượt một dòng, mở đầu bằng `[HH:MM:SS]`.
+
+    Chỉ in mốc bắt đầu, không in cả khoảng: grep được, hợp quy ước biên bản
+    họp, in cả khoảng chỉ thêm nhiễu.
+    """
+    # Có bản dịch thì mượn luôn cách gắn nhãn của text thuần: `[Speaker 1] → vi:`.
+    bracket = any(t.status == "translation" for t in turns)
+    return "\n".join(
+        f"[{format_timestamp(t.start_ms, millis=False)}] "
+        f"{_turn_label(t, bracket_speaker=bracket)}{t.text}"
+        for t in turns
+    )

@@ -1034,3 +1034,89 @@ def test_nang_cap_that_bai_thi_thoat_khac_0(monkeypatch):
     with pytest.raises(SystemExit) as e:
         cli.cmd_update(build_parser().parse_args(["update"]))
     assert e.value.code == 2
+
+
+# --------------------------------------------------------------------------- #
+# --timestamps: text ngắt dòng theo lượt
+# --------------------------------------------------------------------------- #
+def _timed(text, start, end, *, speaker=None):
+    return {"text": text, "start_ms": start, "end_ms": end, "speaker": speaker}
+
+
+def test_timestamps_ngat_dong_theo_luot(monkeypatch, capsys):
+    t = SimpleNamespace(
+        text="Xin chào Vâng",
+        tokens=[
+            _timed("Xin chào", 0, 1000, speaker="1"),
+            _timed("Vâng", 754_000, 755_000, speaker="2"),
+        ],
+    )
+    cli = _fake_transcript_client(monkeypatch, t)
+    cli.cmd_stt_transcript(build_parser().parse_args(["stt", "transcript", "abc", "--timestamps"]))
+    assert capsys.readouterr().out.strip().splitlines() == [
+        "[00:00:00] Speaker 1: Xin chào",
+        "[00:12:34] Speaker 2: Vâng",
+    ]
+
+
+def test_timestamps_flat_bo_nhan_speaker(monkeypatch, capsys):
+    t = SimpleNamespace(
+        text="A B",
+        tokens=[_timed("A ", 0, 100, speaker="1"), _timed("B", 100, 200, speaker="2")],
+    )
+    cli = _fake_transcript_client(monkeypatch, t)
+    cli.cmd_stt_transcript(
+        build_parser().parse_args(["stt", "transcript", "abc", "--timestamps", "--flat"])
+    )
+    assert capsys.readouterr().out.strip() == "[00:00:00] A B"
+
+
+def test_timestamps_ton_trong_output(monkeypatch, tmp_path, capsys):
+    """Đường ra dữ liệu lớn nào cũng phải đi qua `write_out`, có `-o` và có phanh."""
+    out = tmp_path / "hop.txt"
+    t = SimpleNamespace(text="Xin chào", tokens=[_timed("Xin chào", 0, 1000)])
+    cli = _fake_transcript_client(monkeypatch, t)
+    cli.cmd_stt_transcript(
+        build_parser().parse_args(["stt", "transcript", "abc", "--timestamps", "-o", str(out)])
+    )
+    assert out.read_text(encoding="utf-8") == "[00:00:00] Xin chào"
+    assert "Xin chào" not in capsys.readouterr().out
+
+
+def test_timestamps_khong_co_token_thi_bao_loi(monkeypatch):
+    t = SimpleNamespace(text="x", tokens=[])
+    cli = _fake_transcript_client(monkeypatch, t)
+    with pytest.raises(SystemExit):
+        cli.cmd_stt_transcript(
+            build_parser().parse_args(["stt", "transcript", "abc", "--timestamps"])
+        )
+
+
+def test_timestamps_khong_di_cung_subtitles(monkeypatch, capsys):
+    """Hai cách dựng khác nhau cho cùng một đầu ra: bắt chọn, đừng tự đoán."""
+    import soniox_cli.cli as cli
+
+    args = build_parser().parse_args(
+        ["stt", "transcript", "abc", "--timestamps", "--subtitles", "srt"]
+    )
+    with pytest.raises(SystemExit):
+        cli.cmd_stt_transcript(args)
+    assert "--timestamps" in capsys.readouterr().err
+
+
+def test_timestamps_khong_di_cung_no_wait(monkeypatch, capsys):
+    import soniox_cli.cli as cli
+
+    monkeypatch.setattr(cli, "get_client", lambda: SimpleNamespace())
+    args = build_parser().parse_args(
+        ["stt", "transcribe", "https://x/a.mp3", "--no-wait", "--timestamps"]
+    )
+    with pytest.raises(SystemExit):
+        cli.cmd_stt_transcribe(args)
+    assert "--timestamps" in capsys.readouterr().err
+
+
+def test_transcribe_cung_co_timestamps():
+    """Lệnh cứu hộ không kém hơn lệnh nó cứu hộ, nên cả hai phải có cờ này."""
+    args = build_parser().parse_args(["stt", "transcribe", "a.mp3", "--timestamps"])
+    assert args.timestamps is True

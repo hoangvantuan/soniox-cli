@@ -7,7 +7,7 @@ Hướng dẫn cho agent làm việc trên repo này.
 `soniox-cli`: CLI Python bọc Soniox SDK (STT / TTS / Files / Voices). Không có state, không có server, không có realtime streaming.
 
 - `src/soniox_cli/cli.py`: toàn bộ lệnh và parser.
-- `src/soniox_cli/subtitles.py`: dựng SRT/VTT từ token. Thuần logic, không chạm mạng, test dày.
+- `src/soniox_cli/subtitles.py`: dựng SRT/VTT và text theo lượt từ token. Thuần logic, không chạm mạng, test dày.
 - `src/soniox_cli/media.py`: tách audio khỏi video trước khi upload. Gọi `ffmpeg`/`ffprobe` qua `subprocess`.
 - `src/soniox_cli/update.py`: tự cập nhật. Nhận diện cách cài qua `uv-receipt.toml` rồi ủy quyền cho `uv`.
 
